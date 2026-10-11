@@ -353,21 +353,23 @@ export class AntilinkDaemonServer {
 
       case 'TOOL_CONFIRM': {
         const payload = msg.payload;
-        const answer = payload.approved ? 'yes' : 'no';
+        // Map to exact terminal menu choice: 1, 2, 3, or 4
+        let choice = '1';
+        if (payload.optionNumber && [1, 2, 3, 4].includes(payload.optionNumber)) {
+          choice = String(payload.optionNumber);
+        } else if (payload.approved === false) {
+          choice = '4'; // No, cancel
+        } else {
+          choice = '1'; // Yes, run command
+        }
 
-        // 1. Inject "yes" or "no" + Return into active terminal
-        this.injectKeystrokeToTerminal(answer, true);
+        // 1. Inject the option number + Return into the CLI terminal TTY
+        this.injectKeystrokeToTerminal(choice, true);
 
-        // 2. Dispatch note to agent
-        const note = payload.approved
-          ? `[Antilink Remote Control] User APPROVED action for step #${payload.stepIdx}`
-          : `[Antilink Remote Control] User DENIED action for step #${payload.stepIdx}`;
-        this.dispatchAgentMessage(note);
-
-        // 3. Broadcast confirmation feedback
+        // 2. Broadcast confirmation feedback
         this.broadcast({
           type: 'COMMAND_OUTPUT',
-          output: `Step #${payload.stepIdx} ${payload.approved ? 'APPROVED' : 'DENIED'} via Antilink`,
+          output: `Selected Option [${choice}] for step #${payload.stepIdx} via Antilink`,
           exitCode: 0,
         });
         break;
@@ -377,15 +379,24 @@ export class AntilinkDaemonServer {
 
   private injectKeystrokeToTerminal(text: string, hitReturn: boolean = true): void {
     try {
+      const scriptPath = path.resolve(__dirname, '../scripts/inject-tty.py');
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const returnClause = hitReturn
-        ? `-e 'tell application "System Events" to tell process "Code" to key code 36'`
-        : '';
-      const script = `osascript -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
-      exec(script, (err) => {
-        if (err) {
-          const scriptWithActivate = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
-          exec(scriptWithActivate);
+      const newlineArg = hitReturn ? '1' : '0';
+
+      // 1. Primary: Direct TTY injection via TIOCSTI (requires zero accessibility permissions)
+      exec(`python3 "${scriptPath}" "${escaped}" ${newlineArg}`, (pyErr) => {
+        if (pyErr) {
+          // 2. Fallback: AppleScript keystroke
+          const returnClause = hitReturn
+            ? `-e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to key code 36'`
+            : '';
+          const script = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
+          exec(script, (err) => {
+            if (err) {
+              const fallback = `osascript -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
+              exec(fallback);
+            }
+          });
         }
       });
     } catch {

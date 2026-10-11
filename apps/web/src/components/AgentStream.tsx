@@ -27,7 +27,7 @@ interface AgentStreamProps {
   activeConfirmation: ToolConfirmationPayload | null;
   activeConversationTitle?: string;
   remoteControlUrl?: string;
-  onConfirmTool: (stepIdx: number, approved: boolean) => void;
+  onConfirmTool: (stepIdx: number, approved: boolean, optionNumber?: number) => void;
   onSendPrompt: (prompt: string) => void;
   onExecCommand: (cmd: string) => void;
   onOpenShortcuts?: () => void;
@@ -197,12 +197,44 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
       };
     }
 
-    // 2. Check if the latest step in conversation is asking for approval / permission
+    // 2. Check if the latest step in conversation is an uncompleted tool call (waiting for permission in terminal!)
+    if (steps.length > 0) {
+      const lastStep = steps[steps.length - 1];
+      if (
+        !dismissedSteps.has(lastStep.stepIndex) &&
+        lastStep.source !== 'USER_EXPLICIT' &&
+        lastStep.type !== 'USER_INPUT' &&
+        lastStep.toolCalls &&
+        lastStep.toolCalls.length > 0
+      ) {
+        const tool = lastStep.toolCalls[0];
+        // ONLY run_command triggers interactive CLI permission prompts in Antigravity
+        if (tool.name === 'run_command') {
+          const rawCmd = (tool.args.CommandLine as string) || (tool.args.command as string) || '';
+          const cmd = rawCmd.replace(/^["']|["']$/g, '').trim();
+          return {
+            type: 'TOOL',
+            stepIndex: lastStep.stepIndex,
+            toolName: tool.name,
+            commandLine: cmd || 'command',
+            targetFile: undefined,
+          };
+        }
+        return null;
+      }
+    }
+
+    // 3. Check if the latest step in conversation is asking for approval / permission in text
     if (steps.length === 0) return null;
     const lastStep = steps[steps.length - 1];
 
-    // If the last step is from the user, there is nothing for the user to approve (user just spoke)
-    if (lastStep.source === 'USER_EXPLICIT' || lastStep.type === 'USER_INPUT') {
+    // Must strictly be an assistant response (MODEL + PLANNER_RESPONSE) without tool calls
+    // Never match GENERIC (tool output) or SYSTEM_MESSAGE
+    if (
+      lastStep.source !== 'MODEL' ||
+      lastStep.type !== 'PLANNER_RESPONSE' ||
+      (lastStep.toolCalls && lastStep.toolCalls.length > 0)
+    ) {
       return null;
     }
 
@@ -612,74 +644,166 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
               </div>
             </div>
 
-            {/* Exactly what is being approved: Explicit context! */}
+            {/* Tool / Command Permission Request matching Antigravity CLI */}
             {pendingApproval.type === 'TOOL' ? (
-              <div className="bg-palenight-dark/90 rounded p-2.5 border border-palenight-border/60 text-[11px] font-mono space-y-1.5">
-                <div className="text-palenight-muted">
-                  Tool to execute: <span className="text-palenight-cyan font-bold">{pendingApproval.toolName}</span>
-                </div>
-                {pendingApproval.commandLine && (
-                  <pre className="text-palenight-fg bg-palenight-bg/90 p-2 rounded overflow-x-auto text-[10px] leading-relaxed border border-palenight-border/40">
-                    {pendingApproval.commandLine}
+              <div className="space-y-3">
+                <div className="bg-palenight-dark/95 rounded p-3 border border-palenight-border/60 text-xs font-mono space-y-1.5">
+                  <div className="text-[10px] text-palenight-muted">Requesting permission for:</div>
+                  <pre className="text-palenight-cyan bg-palenight-bg p-2 rounded overflow-x-auto text-[11px] font-bold border border-palenight-border/40 select-text leading-relaxed">
+                    {pendingApproval.commandLine || pendingApproval.targetFile || pendingApproval.toolName}
                   </pre>
-                )}
-                {pendingApproval.targetFile && (
-                  <div className="text-palenight-fg text-[11px]">
-                    Target file: <span className="text-palenight-cyan font-bold">{pendingApproval.targetFile}</span>
-                  </div>
-                )}
+                </div>
+
+                <div className="text-xs text-palenight-bright font-mono font-bold">
+                  Run this command?
+                </div>
+
+                {/* 4 Interactive Choice Buttons matching CLI numbered menu */}
+                <div className="space-y-1.5 pt-0.5">
+                  {/* Option 1: Yes, run command */}
+                  <button
+                    onClick={() => {
+                      const stepIdx = pendingApproval.stepIndex;
+                      onConfirmTool(stepIdx, true, 1);
+                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                      setActionFeedback('Option 1 selected: Running command ✓');
+                      setTimeout(() => setActionFeedback(null), 3000);
+                    }}
+                    className="w-full text-left bg-palenight-green/10 hover:bg-palenight-green/20 border border-palenight-green/40 hover:border-palenight-green text-palenight-bright p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center space-x-2 text-xs font-mono">
+                      <span className="font-bold text-palenight-green text-sm">1.</span>
+                      <span className="font-semibold text-palenight-bright group-hover:text-palenight-green">
+                        Yes, run command
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-palenight-muted group-hover:text-palenight-bright font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                      [Enter]
+                    </span>
+                  </button>
+
+                  {/* Option 2: Yes, and always allow in this conversation */}
+                  <button
+                    onClick={() => {
+                      const stepIdx = pendingApproval.stepIndex;
+                      onConfirmTool(stepIdx, true, 2);
+                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                      const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                      const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
+                      setActionFeedback(`Option 2 selected: Allowed '${prefix}' in conversation ✓`);
+                      setTimeout(() => setActionFeedback(null), 3000);
+                    }}
+                    className="w-full text-left bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 hover:border-palenight-mauve text-palenight-fg p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center space-x-2 text-xs font-mono">
+                      <span className="font-bold text-palenight-mauve text-sm">2.</span>
+                      <span className="text-[11px] group-hover:text-palenight-bright">
+                        Yes, and always allow in this conversation for commands that start with &apos;{(() => {
+                          const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                          return cmd.split(/\s+/).slice(0, 2).join(' ');
+                        })()}&apos;
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                      [2]
+                    </span>
+                  </button>
+
+                  {/* Option 3: Yes, and always allow (Persist to settings.json) */}
+                  <button
+                    onClick={() => {
+                      const stepIdx = pendingApproval.stepIndex;
+                      onConfirmTool(stepIdx, true, 3);
+                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                      const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                      const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
+                      setActionFeedback(`Option 3 selected: Persisted '${prefix}' to settings.json ✓`);
+                      setTimeout(() => setActionFeedback(null), 3000);
+                    }}
+                    className="w-full text-left bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 hover:border-palenight-cyan text-palenight-fg p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center space-x-2 text-xs font-mono">
+                      <span className="font-bold text-palenight-cyan text-sm">3.</span>
+                      <span className="text-[11px] group-hover:text-palenight-bright">
+                        Yes, and always allow for commands that start with &apos;{(() => {
+                          const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                          return cmd.split(/\s+/).slice(0, 2).join(' ');
+                        })()}&apos; (Persist to settings.json)
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                      [3]
+                    </span>
+                  </button>
+
+                  {/* Option 4: No, cancel */}
+                  <button
+                    onClick={() => {
+                      const stepIdx = pendingApproval.stepIndex;
+                      onConfirmTool(stepIdx, false, 4);
+                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                      setActionFeedback('Option 4 selected: Cancelled command ✗');
+                      setTimeout(() => setActionFeedback(null), 3000);
+                    }}
+                    className="w-full text-left bg-palenight-red/10 hover:bg-palenight-red/20 border border-palenight-red/40 hover:border-palenight-red text-palenight-bright p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center space-x-2 text-xs font-mono">
+                      <span className="font-bold text-palenight-red text-sm">4.</span>
+                      <span className="font-semibold text-palenight-red">
+                        No, cancel
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                      [4]
+                    </span>
+                  </button>
+                </div>
               </div>
             ) : (
-              <div className="bg-palenight-dark/90 rounded p-3 border border-palenight-mauve/30 text-xs font-mono space-y-1.5">
-                <div className="text-[10px] text-palenight-mauve font-bold uppercase tracking-wider">
-                  Luna is requesting your approval for:
+              <div className="space-y-3">
+                <div className="bg-palenight-dark/90 rounded p-3 border border-palenight-mauve/30 text-xs font-mono space-y-1.5">
+                  <div className="text-[10px] text-palenight-mauve font-bold uppercase tracking-wider">
+                    Luna is requesting your approval for:
+                  </div>
+                  <div className="text-palenight-bright text-[11px] leading-relaxed bg-palenight-card/80 p-2 rounded border border-palenight-border/50">
+                    {pendingApproval.proposalText}
+                  </div>
                 </div>
-                <div className="text-palenight-bright text-[11px] leading-relaxed bg-palenight-card/80 p-2 rounded border border-palenight-border/50">
-                  {pendingApproval.proposalText}
+
+                {/* Primary Action Buttons for Text Decision */}
+                <div className="flex space-x-2.5 pt-0.5">
+                  <button
+                    onClick={() => {
+                      const stepIdx = pendingApproval.stepIndex;
+                      onSendPrompt('yes');
+                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                      setActionFeedback('Dispatched approval to Luna (yes) ✓');
+                      setTimeout(() => setActionFeedback(null), 3000);
+                    }}
+                    className="flex-1 bg-palenight-green text-palenight-dark font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
+                    title="Accept and proceed"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>Accept & Proceed</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const stepIdx = pendingApproval.stepIndex;
+                      onSendPrompt('no');
+                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                      setActionFeedback('Dispatched decline to Luna (no) ✗');
+                      setTimeout(() => setActionFeedback(null), 3000);
+                    }}
+                    className="flex-1 bg-palenight-red text-palenight-bright font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
+                    title="Decline action"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>Decline</span>
+                  </button>
                 </div>
               </div>
             )}
-
-            {/* Primary Action Buttons */}
-            <div className="flex space-x-2.5 pt-0.5">
-              <button
-                onClick={() => {
-                  const stepIdx = pendingApproval.stepIndex;
-                  if (pendingApproval.type === 'TOOL') {
-                    onConfirmTool(stepIdx, true);
-                  } else {
-                    onSendPrompt('yes');
-                  }
-                  setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                  setActionFeedback('Dispatched approval to Luna (yes) ✓');
-                  setTimeout(() => setActionFeedback(null), 3000);
-                }}
-                className="flex-1 bg-palenight-green text-palenight-dark font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
-                title="Accept and proceed"
-              >
-                <Check className="w-4 h-4" />
-                <span>Accept & Proceed</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  const stepIdx = pendingApproval.stepIndex;
-                  if (pendingApproval.type === 'TOOL') {
-                    onConfirmTool(stepIdx, false);
-                  } else {
-                    onSendPrompt('no');
-                  }
-                  setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                  setActionFeedback('Dispatched decline to Luna (no) ✗');
-                  setTimeout(() => setActionFeedback(null), 3000);
-                }}
-                className="flex-1 bg-palenight-red text-palenight-bright font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
-                title="Decline action"
-              >
-                <X className="w-4 h-4" />
-                <span>Decline</span>
-              </button>
-            </div>
 
             {/* Quick Action Steering Pills */}
             <div className="flex flex-wrap gap-1.5 pt-1 border-t border-palenight-border/40">

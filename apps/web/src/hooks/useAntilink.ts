@@ -184,7 +184,7 @@ export function useAntilink() {
   );
 
   const confirmTool = useCallback(
-    (stepIdx: number, approved: boolean) => {
+    (stepIdx: number, approved: boolean, optionNumber?: number) => {
       const convId = activeConfirmation?.conversationId || activeConversationId || '';
       sendMessage({
         type: 'TOOL_CONFIRM',
@@ -193,6 +193,7 @@ export function useAntilink() {
           stepIdx,
           approved,
           decision: approved ? 'allow' : 'deny',
+          optionNumber: optionNumber ?? (approved ? 1 : 4),
         },
       });
       setActiveConfirmation(null);

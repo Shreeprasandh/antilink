@@ -88,7 +88,8 @@ export interface ToolConfirmationResponse {
   conversationId: string;
   stepIdx: number;
   approved: boolean;
-  decision: 'allow' | 'deny';
+  decision?: 'allow' | 'deny';
+  optionNumber?: number; // 1, 2, 3, or 4
   reason?: string;
 }
 
