@@ -51,6 +51,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   const [showSlashMenu, setShowSlashMenu] = useState<boolean>(false);
   const [selectedSlashIndex, setSelectedSlashIndex] = useState<number>(0);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [dismissedSteps, setDismissedSteps] = useState<Set<number>>(new Set());
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollRef = useRef<boolean>(true);
@@ -175,14 +176,73 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     return finalSet;
   }, [steps]);
 
-  // Determine if latest assistant message or turn is complete and awaiting user direction/permission
-  const isAwaitingApproval = useMemo(() => {
-    if (activeConfirmation) return true;
-    if (steps.length === 0) return false;
+  // Determine if there is an active pending approval request (and extract context)
+  const pendingApproval = useMemo<{
+    type: 'TOOL' | 'PROPOSAL';
+    stepIndex: number;
+    toolName?: string;
+    commandLine?: string;
+    targetFile?: string;
+    proposalText?: string;
+  } | null>(() => {
+    // 1. Explicit tool confirmation takes precedence
+    if (activeConfirmation) {
+      if (dismissedSteps.has(activeConfirmation.stepIdx)) return null;
+      return {
+        type: 'TOOL',
+        stepIndex: activeConfirmation.stepIdx,
+        toolName: activeConfirmation.toolName,
+        commandLine: activeConfirmation.commandLine,
+        targetFile: activeConfirmation.targetFile,
+      };
+    }
+
+    // 2. Check if the latest step in conversation is asking for approval / permission
+    if (steps.length === 0) return null;
     const lastStep = steps[steps.length - 1];
-    // If the last step in the transcript is from the assistant/system (turn completed, Luna waiting for user!)
-    return lastStep.source !== 'USER_EXPLICIT' && lastStep.type !== 'USER_INPUT';
-  }, [activeConfirmation, steps]);
+
+    // If the last step is from the user, there is nothing for the user to approve (user just spoke)
+    if (lastStep.source === 'USER_EXPLICIT' || lastStep.type === 'USER_INPUT') {
+      return null;
+    }
+
+    // If already approved or dismissed, don't show
+    if (dismissedSteps.has(lastStep.stepIndex)) {
+      return null;
+    }
+
+    // Must be an assistant message with substantive text
+    const content = lastStep.content || '';
+    if (!content.trim()) return null;
+
+    // Check if Luna is asking for approval / confirmation / permission
+    const approvalRegex = /\b(would you like|shall I|should I|do you want me to|do you want to proceed|please confirm|proceed with|approve|permission to|confirm these changes|review and commit)\b/i;
+
+    if (!approvalRegex.test(content)) {
+      return null;
+    }
+
+    // Extract the specific question / proposal sentence
+    const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
+    let proposalSentence = '';
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].replace(/^[#*>\-\s]+/, '').trim();
+      if (approvalRegex.test(line) || (line.endsWith('?') && i === lines.length - 1)) {
+        proposalSentence = line;
+        break;
+      }
+    }
+
+    if (!proposalSentence) {
+      proposalSentence = lines[lines.length - 1] || 'Approval requested by Luna.';
+    }
+
+    return {
+      type: 'PROPOSAL',
+      stepIndex: lastStep.stepIndex,
+      proposalText: proposalSentence,
+    };
+  }, [activeConfirmation, steps, dismissedSteps]);
 
   // Toggle all steps expanded / collapsed (Ctrl+O parity)
   const toggleAllSteps = useCallback(() => {
@@ -228,6 +288,9 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputPrompt.trim()) return;
+    if (pendingApproval) {
+      setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex));
+    }
     onSendPrompt(inputPrompt.trim());
     setInputPrompt('');
     setShowSlashMenu(false);
@@ -525,49 +588,55 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
           );
         })}
 
-        {/* Interactive Action Approval & Remote Control Card (Sticky at end when pending direction) */}
-        {isAwaitingApproval && (
+        {/* Interactive Action Approval Card (ONLY shown when there is ACTUALLY something to approve!) */}
+        {pendingApproval && (
           <div className="rounded-lg border-2 border-palenight-mauve/80 bg-palenight-card p-4 shadow-2xl transition-all mr-2 sm:mr-6 animate-in slide-in-from-bottom-2 duration-150 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2 text-palenight-bright font-bold text-xs font-mono">
                 <ShieldCheck className="w-4 h-4 text-palenight-mauve" />
-                <span>Action Approval & Remote Control</span>
+                <span>
+                  {pendingApproval.type === 'TOOL' ? 'Tool Execution Permission' : 'Action Approval Required'}
+                </span>
               </div>
-              <span className="text-[10px] text-palenight-yellow font-mono font-bold bg-palenight-dark px-2.5 py-0.5 rounded border border-palenight-border animate-pulse">
-                {activeConfirmation ? `Confirmation Required: Step #${activeConfirmation.stepIdx}` : 'Awaiting Direction'}
-              </span>
+              <div className="flex items-center space-x-2">
+                <span className="text-[10px] text-palenight-yellow font-mono font-bold bg-palenight-dark px-2.5 py-0.5 rounded border border-palenight-border animate-pulse">
+                  Pending Decision
+                </span>
+                <button
+                  onClick={() => setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex))}
+                  className="text-palenight-muted hover:text-palenight-fg p-0.5 cursor-pointer"
+                  title="Dismiss card"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
-            {/* Tool confirmation details if active */}
-            {activeConfirmation && (
-              <div className="bg-palenight-dark/80 rounded p-2.5 border border-palenight-border/60 text-[11px] font-mono space-y-1">
+            {/* Exactly what is being approved: Explicit context! */}
+            {pendingApproval.type === 'TOOL' ? (
+              <div className="bg-palenight-dark/90 rounded p-2.5 border border-palenight-border/60 text-[11px] font-mono space-y-1.5">
                 <div className="text-palenight-muted">
-                  Tool: <span className="text-palenight-cyan font-semibold">{activeConfirmation.toolName}</span>
+                  Tool to execute: <span className="text-palenight-cyan font-bold">{pendingApproval.toolName}</span>
                 </div>
-                {activeConfirmation.commandLine && (
-                  <pre className="text-palenight-fg bg-palenight-bg/80 p-1.5 rounded overflow-x-auto text-[10px]">
-                    {activeConfirmation.commandLine}
+                {pendingApproval.commandLine && (
+                  <pre className="text-palenight-fg bg-palenight-bg/90 p-2 rounded overflow-x-auto text-[10px] leading-relaxed border border-palenight-border/40">
+                    {pendingApproval.commandLine}
                   </pre>
                 )}
-                {activeConfirmation.targetFile && (
-                  <div className="text-palenight-fg text-[10px]">
-                    Target: <span className="text-palenight-cyan">{activeConfirmation.targetFile}</span>
+                {pendingApproval.targetFile && (
+                  <div className="text-palenight-fg text-[11px]">
+                    Target file: <span className="text-palenight-cyan font-bold">{pendingApproval.targetFile}</span>
                   </div>
                 )}
               </div>
-            )}
-
-            {!activeConfirmation && (
-              <p className="text-[11px] text-palenight-fg leading-relaxed">
-                Luna has completed this execution turn and is awaiting your direction. Tap below to approve or decline, or select a steering action.
-              </p>
-            )}
-
-            {/* Instant Action Feedback Toast */}
-            {actionFeedback && (
-              <div className="bg-palenight-mauve/20 border border-palenight-mauve/40 text-palenight-bright text-xs px-3 py-1.5 rounded flex items-center space-x-2 font-mono">
-                <Check className="w-3.5 h-3.5 text-palenight-green" />
-                <span>{actionFeedback}</span>
+            ) : (
+              <div className="bg-palenight-dark/90 rounded p-3 border border-palenight-mauve/30 text-xs font-mono space-y-1.5">
+                <div className="text-[10px] text-palenight-mauve font-bold uppercase tracking-wider">
+                  Luna is requesting your approval for:
+                </div>
+                <div className="text-palenight-bright text-[11px] leading-relaxed bg-palenight-card/80 p-2 rounded border border-palenight-border/50">
+                  {pendingApproval.proposalText}
+                </div>
               </div>
             )}
 
@@ -575,16 +644,18 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             <div className="flex space-x-2.5 pt-0.5">
               <button
                 onClick={() => {
-                  if (activeConfirmation) {
-                    onConfirmTool(activeConfirmation.stepIdx, true);
+                  const stepIdx = pendingApproval.stepIndex;
+                  if (pendingApproval.type === 'TOOL') {
+                    onConfirmTool(stepIdx, true);
                   } else {
                     onSendPrompt('yes');
                   }
+                  setDismissedSteps((prev) => new Set(prev).add(stepIdx));
                   setActionFeedback('Dispatched approval to Luna (yes) ✓');
                   setTimeout(() => setActionFeedback(null), 3000);
                 }}
                 className="flex-1 bg-palenight-green text-palenight-dark font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
-                title="Send approval to Luna (yes)"
+                title="Accept and proceed"
               >
                 <Check className="w-4 h-4" />
                 <span>Accept & Proceed</span>
@@ -592,16 +663,18 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
 
               <button
                 onClick={() => {
-                  if (activeConfirmation) {
-                    onConfirmTool(activeConfirmation.stepIdx, false);
+                  const stepIdx = pendingApproval.stepIndex;
+                  if (pendingApproval.type === 'TOOL') {
+                    onConfirmTool(stepIdx, false);
                   } else {
                     onSendPrompt('no');
                   }
+                  setDismissedSteps((prev) => new Set(prev).add(stepIdx));
                   setActionFeedback('Dispatched decline to Luna (no) ✗');
                   setTimeout(() => setActionFeedback(null), 3000);
                 }}
                 className="flex-1 bg-palenight-red text-palenight-bright font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
-                title="Decline action (no)"
+                title="Decline action"
               >
                 <X className="w-4 h-4" />
                 <span>Decline</span>
@@ -612,28 +685,31 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             <div className="flex flex-wrap gap-1.5 pt-1 border-t border-palenight-border/40">
               <span className="text-[10px] text-palenight-muted py-0.5 mr-1 font-mono">Quick Steer:</span>
               <button
-                onClick={() => onSendPrompt('npm test')}
+                onClick={() => {
+                  setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex));
+                  onSendPrompt('npm test');
+                }}
                 className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-fg px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
               >
                 Run Tests
               </button>
               <button
-                onClick={() => onSendPrompt('/arise shadows')}
+                onClick={() => {
+                  setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex));
+                  onSendPrompt('/arise shadows');
+                }}
                 className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-mauve px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
               >
                 /arise shadows
               </button>
               <button
-                onClick={() => onSendPrompt('/convene the five monks')}
+                onClick={() => {
+                  setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex));
+                  onSendPrompt('/convene the five monks');
+                }}
                 className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-yellow px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
               >
                 Five Monks
-              </button>
-              <button
-                onClick={() => onSendPrompt('Please review and commit changes')}
-                className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-green px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
-              >
-                Review & Commit
               </button>
             </div>
 
