@@ -1,6 +1,6 @@
 /**
  * Antilink Shared Protocol Specification
- * Palenight Theme Compliant, Type-Safe Event Definitions
+ * Full Antigravity Remote Control Parity + SQLite Authoritative Metadata
  */
 
 export interface SystemTelemetry {
@@ -20,6 +20,40 @@ export interface DiscoveredPort {
   serviceType: 'frontend' | 'api' | 'database' | 'custom';
   url: string;
   previewPath: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  preview?: string;
+  updatedAt: string;
+  isActive: boolean;
+  stepCount: number;
+}
+
+export interface SubagentInfo {
+  id: string;
+  role: string;
+  typeName: string;
+  state: 'running' | 'idle' | 'waiting_for_input' | 'canceled' | 'errored';
+  createdAt: string;
+}
+
+export interface BackgroundTaskInfo {
+  id: string;
+  command: string;
+  status: 'RUNNING' | 'DONE' | 'ERROR' | 'CANCELED';
+  logPath: string;
+  createdAt: string;
+}
+
+export interface ArtifactInfo {
+  stepIndex: number;
+  title: string;
+  summary: string;
+  targetFile?: string;
+  content: string;
+  createdAt: string;
 }
 
 export interface AgentStep {
@@ -61,16 +95,22 @@ export interface ToolConfirmationResponse {
 export type AntilinkClientMessage =
   | { type: 'AUTH'; token: string }
   | { type: 'GET_STATE' }
+  | { type: 'SWITCH_CONVERSATION'; conversationId: string }
   | { type: 'SEND_PROMPT'; prompt: string }
   | { type: 'TOOL_CONFIRM'; payload: ToolConfirmationResponse }
   | { type: 'TOGGLE_CAFFEINATE'; enable: boolean }
   | { type: 'SCAN_PORTS' }
-  | { type: 'EXEC_COMMAND'; command: string };
+  | { type: 'EXEC_COMMAND'; command: string }
+  | { type: 'KILL_TASK'; taskId: string };
 
 export type AntilinkServerMessage =
   | { type: 'AUTH_SUCCESS'; session: { paired: boolean; machineName: string } }
   | { type: 'AUTH_FAILED'; error: string }
   | { type: 'INITIAL_STATE'; data: AntilinkInitialState }
+  | { type: 'CONVERSATIONS_UPDATED'; conversations: ConversationSummary[] }
+  | { type: 'SUBAGENTS_UPDATED'; subagents: SubagentInfo[] }
+  | { type: 'TASKS_UPDATED'; tasks: BackgroundTaskInfo[] }
+  | { type: 'ARTIFACTS_UPDATED'; artifacts: ArtifactInfo[] }
   | { type: 'AGENT_STEP_ADDED'; step: AgentStep }
   | { type: 'AGENT_STEP_UPDATED'; step: AgentStep }
   | { type: 'TOOL_CONFIRM_REQUEST'; payload: ToolConfirmationPayload }
@@ -81,10 +121,15 @@ export type AntilinkServerMessage =
 
 export interface AntilinkInitialState {
   machineName: string;
+  activeConversationTitle?: string;
   tunnelUrl: string | null;
   localUrl: string;
   ports: DiscoveredPort[];
   telemetry: SystemTelemetry;
   activeConversationId: string | null;
+  conversations: ConversationSummary[];
+  subagents: SubagentInfo[];
+  tasks: BackgroundTaskInfo[];
+  artifacts: ArtifactInfo[];
   recentSteps: AgentStep[];
 }

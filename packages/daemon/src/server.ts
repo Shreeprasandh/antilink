@@ -272,6 +272,24 @@ export class AntilinkDaemonServer {
         });
         break;
 
+      case 'SWITCH_CONVERSATION':
+        if (this.agentBridge.switchConversation(msg.conversationId)) {
+          this.broadcast({
+            type: 'INITIAL_STATE',
+            data: this.getInitialState(),
+          });
+        }
+        break;
+
+      case 'KILL_TASK':
+        exec(`kill ${msg.taskId}`, () => {
+          this.broadcast({
+            type: 'TASKS_UPDATED',
+            tasks: this.agentBridge.getTasks(),
+          });
+        });
+        break;
+
       case 'TOGGLE_CAFFEINATE':
         if (msg.enable) {
           this.caffeinate.start();
@@ -303,6 +321,19 @@ export class AntilinkDaemonServer {
         });
         break;
 
+      case 'SEND_PROMPT':
+        // Handle quick action commands or record prompt
+        if (msg.prompt.startsWith('git ') || msg.prompt.startsWith('npm ') || msg.prompt.startsWith('node ')) {
+          exec(msg.prompt, { cwd: process.cwd() }, (err, stdout, stderr) => {
+            this.sendTo(ws, {
+              type: 'COMMAND_OUTPUT',
+              output: stdout || stderr || (err ? err.message : 'Command executed successfully'),
+              exitCode: err ? (err.code || 1) : 0,
+            });
+          });
+        }
+        break;
+
       case 'TOOL_CONFIRM':
         // Record or broadcast response
         break;
@@ -314,6 +345,10 @@ export class AntilinkDaemonServer {
       this.broadcast({
         type: 'AGENT_STEP_ADDED',
         step,
+      });
+      this.broadcast({
+        type: 'ARTIFACTS_UPDATED',
+        artifacts: this.agentBridge.getArtifacts(),
       });
     });
 
@@ -343,17 +378,30 @@ export class AntilinkDaemonServer {
         telemetry: telem,
       });
     }, 2000);
+
+    // Refresh conversation list every 5 seconds
+    setInterval(() => {
+      this.broadcast({
+        type: 'CONVERSATIONS_UPDATED',
+        conversations: this.agentBridge.getConversations(),
+      });
+    }, 5000);
   }
 
   private getInitialState(): AntilinkInitialState {
     const telem = this.telemetry.getTelemetry(this.caffeinate.getStatus());
     return {
       machineName: telem.hostname,
+      activeConversationTitle: this.agentBridge.getActiveConversationTitle(),
       tunnelUrl: this.tunnelUrl,
       localUrl: `http://localhost:${this.port}`,
       ports: this.portScanner.getActivePorts(),
       telemetry: telem,
       activeConversationId: this.agentBridge.getActiveConversationId(),
+      conversations: this.agentBridge.getConversations(),
+      subagents: this.agentBridge.getSubagents(),
+      tasks: this.agentBridge.getTasks(),
+      artifacts: this.agentBridge.getArtifacts(),
       recentSteps: this.agentBridge.getRecentSteps(),
     };
   }

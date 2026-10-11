@@ -1,11 +1,21 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import type { AgentStep, AgentToolCall, ToolConfirmationPayload } from '@antilink/shared';
+import type {
+  AgentStep,
+  AgentToolCall,
+  ToolConfirmationPayload,
+  ConversationSummary,
+  SubagentInfo,
+  BackgroundTaskInfo,
+  ArtifactInfo,
+} from '@antilink/shared';
 
 export class AgentBridge extends EventEmitter {
   private brainDir: string;
+  private dbPath: string;
   private activeConversationId: string | null = null;
   private transcriptPath: string | null = null;
   private lastReadBytes: number = 0;
@@ -16,11 +26,11 @@ export class AgentBridge extends EventEmitter {
   constructor() {
     super();
     this.brainDir = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
+    this.dbPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'conversation_summaries.db');
   }
 
   public init(): void {
     this.discoverActiveConversation();
-    // Poll every 1.5s to ensure no dropped events
     this.pollInterval = setInterval(() => {
       this.checkAndReadTranscript();
     }, 1500);
@@ -41,8 +51,243 @@ export class AgentBridge extends EventEmitter {
     return this.activeConversationId;
   }
 
+  public getActiveConversationTitle(): string {
+    if (!this.activeConversationId) return 'Antilink';
+
+    try {
+      if (fs.existsSync(this.dbPath)) {
+        const stdout = execSync(
+          `/usr/bin/sqlite3 "${this.dbPath}" -json "SELECT title, preview FROM conversation_summaries WHERE conversation_id = '${this.activeConversationId}';"`,
+          { encoding: 'utf-8', timeout: 1000 }
+        );
+        const rows = JSON.parse(stdout || '[]');
+        if (rows.length > 0 && (rows[0].title || rows[0].preview)) {
+          const raw = rows[0].title || rows[0].preview;
+          const cleaned = raw.replace(/<USER_REQUEST>|<\/USER_REQUEST>/g, '').trim();
+          if (cleaned) return cleaned;
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    // Fallback: check transcript
+    if (this.transcriptPath && fs.existsSync(this.transcriptPath)) {
+      try {
+        const head = fs.readFileSync(this.transcriptPath, 'utf-8');
+        const lines = head.split('\n').filter((l) => l.trim().length > 0);
+        for (const l of lines) {
+          const parsed = JSON.parse(l);
+          if (parsed.type === 'USER_INPUT' && parsed.content) {
+            const cleaned = parsed.content.replace(/<USER_REQUEST>|<\/USER_REQUEST>/g, '').trim();
+            if (cleaned) return cleaned.slice(0, 36);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return 'Antilink';
+  }
+
   public getRecentSteps(): AgentStep[] {
     return this.recentSteps;
+  }
+
+  public switchConversation(id: string): boolean {
+    const targetDir = path.join(this.brainDir, id);
+    const transcript = path.join(targetDir, '.system_generated', 'logs', 'transcript.jsonl');
+    if (!fs.existsSync(transcript)) return false;
+
+    this.activeConversationId = id;
+    this.transcriptPath = transcript;
+    this.lastReadBytes = 0;
+    this.setupWatcher(transcript);
+    this.readFullTranscript(transcript);
+    return true;
+  }
+
+  public getConversations(): ConversationSummary[] {
+    // 1. Authoritative SQLite database check
+    if (fs.existsSync(this.dbPath)) {
+      try {
+        const stdout = execSync(
+          `/usr/bin/sqlite3 "${this.dbPath}" -json "SELECT conversation_id, title, preview, step_count, last_modified_time FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 30;"`,
+          { encoding: 'utf-8', timeout: 1500 }
+        );
+        const rows = JSON.parse(stdout || '[]');
+        if (Array.isArray(rows) && rows.length > 0) {
+          return rows.map((r: { conversation_id: string; title?: string; preview?: string; step_count?: number; last_modified_time?: string }) => {
+            const cleanTitle = (r.title || r.preview || r.conversation_id.slice(0, 8))
+              .replace(/<USER_REQUEST>|<\/USER_REQUEST>/g, '')
+              .trim();
+            const cleanPreview = r.preview
+              ? r.preview.replace(/<USER_REQUEST>|<\/USER_REQUEST>/g, '').trim()
+              : undefined;
+
+            return {
+              id: r.conversation_id,
+              title: cleanTitle || r.conversation_id.slice(0, 8),
+              preview: cleanPreview,
+              updatedAt: r.last_modified_time || new Date().toISOString(),
+              isActive: r.conversation_id === this.activeConversationId,
+              stepCount: r.step_count || 0,
+            };
+          });
+        }
+      } catch {
+        // fallback to filesystem scan
+      }
+    }
+
+    // 2. Filesystem scan fallback
+    if (!fs.existsSync(this.brainDir)) return [];
+
+    try {
+      const entries = fs.readdirSync(this.brainDir, { withFileTypes: true });
+      return entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => {
+          const dirPath = path.join(this.brainDir, e.name);
+          const stat = fs.statSync(dirPath);
+          const transcript = path.join(dirPath, '.system_generated', 'logs', 'transcript.jsonl');
+
+          let title = e.name.slice(0, 8);
+          let preview: string | undefined = undefined;
+          let stepCount = 0;
+
+          if (fs.existsSync(transcript)) {
+            try {
+              const head = fs.readFileSync(transcript, 'utf-8');
+              const lines = head.split('\n').filter((l) => l.trim().length > 0);
+              stepCount = lines.length;
+
+              for (const l of lines) {
+                const parsed = JSON.parse(l);
+                if (parsed.type === 'USER_INPUT' && parsed.content) {
+                  const cleaned = parsed.content.replace(/<USER_REQUEST>|<\/USER_REQUEST>/g, '').trim();
+                  title = cleaned.slice(0, 36);
+                  preview = cleaned.slice(0, 60);
+                  break;
+                }
+              }
+            } catch {
+              // fallback
+            }
+          }
+
+          return {
+            id: e.name,
+            title,
+            preview,
+            updatedAt: new Date(stat.mtimeMs).toISOString(),
+            isActive: e.name === this.activeConversationId,
+            stepCount,
+          };
+        })
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+        .slice(0, 20);
+    } catch {
+      return [];
+    }
+  }
+
+  public getSubagents(): SubagentInfo[] {
+    if (!this.activeConversationId) return [];
+    const subagentsDir = path.join(this.brainDir, this.activeConversationId, '.system_generated', 'subagents');
+    const result: SubagentInfo[] = [];
+
+    if (fs.existsSync(subagentsDir)) {
+      try {
+        const entries = fs.readdirSync(subagentsDir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isDirectory()) {
+            result.push({
+              id: e.name,
+              role: 'Subagent Worker',
+              typeName: 'research',
+              state: 'idle',
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    for (const step of this.recentSteps) {
+      if (step.toolCalls) {
+        for (const tool of step.toolCalls) {
+          if (tool.name === 'invoke_subagent' && Array.isArray(tool.args.Subagents)) {
+            for (const s of tool.args.Subagents as Array<{ TypeName?: string; Role?: string }>) {
+              result.push({
+                id: `subagent-${step.stepIndex}`,
+                role: s.Role || 'Assistant',
+                typeName: s.TypeName || 'self',
+                state: 'idle',
+                createdAt: step.createdAt,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    return result.slice(0, 10);
+  }
+
+  public getTasks(): BackgroundTaskInfo[] {
+    if (!this.activeConversationId) return [];
+    const tasksDir = path.join(this.brainDir, this.activeConversationId, '.system_generated', 'tasks');
+    const result: BackgroundTaskInfo[] = [];
+
+    if (fs.existsSync(tasksDir)) {
+      try {
+        const files = fs.readdirSync(tasksDir).filter((f) => f.endsWith('.log'));
+        for (const file of files) {
+          const taskId = file.replace('.log', '');
+          const logPath = path.join(tasksDir, file);
+          const stat = fs.statSync(logPath);
+          result.push({
+            id: taskId,
+            command: 'Background Task',
+            status: 'DONE',
+            logPath,
+            createdAt: new Date(stat.mtimeMs).toISOString(),
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return result.slice(0, 10);
+  }
+
+  public getArtifacts(): ArtifactInfo[] {
+    const result: ArtifactInfo[] = [];
+
+    for (const step of this.recentSteps) {
+      if (step.toolCalls) {
+        for (const tool of step.toolCalls) {
+          if (tool.name === 'write_to_file' && tool.args.ArtifactMetadata) {
+            const meta = tool.args.ArtifactMetadata as { Summary?: string };
+            result.push({
+              stepIndex: step.stepIndex,
+              title: path.basename((tool.args.TargetFile as string) || 'Artifact'),
+              summary: meta.Summary || 'Generated artifact',
+              targetFile: (tool.args.TargetFile as string) || undefined,
+              content: (tool.args.CodeContent as string) || '',
+              createdAt: step.createdAt,
+            });
+          }
+        }
+      }
+    }
+
+    return result.slice(0, 10);
   }
 
   private discoverActiveConversation(): void {
@@ -70,7 +315,7 @@ export class AgentBridge extends EventEmitter {
         }
       }
     } catch {
-      // ignore discovery failures
+      // ignore
     }
   }
 
@@ -83,7 +328,7 @@ export class AgentBridge extends EventEmitter {
         this.checkAndReadTranscript();
       });
     } catch {
-      // fallback to poll
+      // fallback
     }
   }
 
@@ -103,11 +348,11 @@ export class AgentBridge extends EventEmitter {
           const step = this.transformRawStep(raw);
           if (step) steps.push(step);
         } catch {
-          // ignore malformed line
+          // ignore
         }
       }
 
-      this.recentSteps = steps.slice(-50); // Keep last 50 steps
+      this.recentSteps = steps.slice(-60);
       this.emit('initial_steps', this.recentSteps);
     } catch {
       // ignore
@@ -123,7 +368,6 @@ export class AgentBridge extends EventEmitter {
     try {
       const stat = fs.statSync(this.transcriptPath);
       if (stat.size < this.lastReadBytes) {
-        // File was truncated / rewritten
         this.lastReadBytes = 0;
         this.readFullTranscript(this.transcriptPath);
         return;
@@ -150,10 +394,9 @@ export class AgentBridge extends EventEmitter {
               const step = this.transformRawStep(raw);
               if (step) {
                 this.recentSteps.push(step);
-                if (this.recentSteps.length > 50) this.recentSteps.shift();
+                if (this.recentSteps.length > 60) this.recentSteps.shift();
                 this.emit('step_added', step);
 
-                // Check for confirmation requirement
                 if (step.toolCalls && step.toolCalls.length > 0) {
                   for (const tool of step.toolCalls) {
                     if (tool.isConfirmationRequired) {
@@ -171,13 +414,13 @@ export class AgentBridge extends EventEmitter {
                 }
               }
             } catch {
-              // ignore parse errors
+              // ignore
             }
           }
         });
       }
     } catch {
-      // ignore read errors
+      // ignore
     }
   }
 

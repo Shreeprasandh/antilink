@@ -154,7 +154,7 @@ export const PreviewMatrix: React.FC<PreviewMatrixProps> = ({ ports, onScanPorts
       <div className="flex-1 bg-palenight-bg overflow-hidden flex items-center justify-center p-0">
         {selectedPort ? (
           <div
-            className={`h-full transition-all duration-200 bg-white ${
+            className={`h-full transition-all duration-200 bg-palenight-dark ${
               viewportMode === 'mobile'
                 ? 'w-full max-w-[390px] border-x border-palenight-border shadow-2xl'
                 : viewportMode === 'tablet'
@@ -165,7 +165,7 @@ export const PreviewMatrix: React.FC<PreviewMatrixProps> = ({ ports, onScanPorts
             <iframe
               key={iframeKey}
               src={previewUrl}
-              className="w-full h-full border-0"
+              className="w-full h-full border-0 bg-palenight-dark"
               title={`Live Preview Port ${selectedPort}`}
             />
           </div>

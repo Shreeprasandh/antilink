@@ -8,6 +8,10 @@ import type {
   SystemTelemetry,
   AgentStep,
   ToolConfirmationPayload,
+  ConversationSummary,
+  SubagentInfo,
+  BackgroundTaskInfo,
+  ArtifactInfo,
 } from '@antilink/shared';
 
 export function useAntilink() {
@@ -21,6 +25,14 @@ export function useAntilink() {
   const [activeConfirmation, setActiveConfirmation] = useState<ToolConfirmationPayload | null>(null);
   const [commandOutput, setCommandOutput] = useState<{ output: string; exitCode?: number } | null>(null);
 
+  // Full Antigravity Parity states
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationTitle, setActiveConversationTitle] = useState<string>('Antilink');
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [subagents, setSubagents] = useState<SubagentInfo[]>([]);
+  const [tasks, setTasks] = useState<BackgroundTaskInfo[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
+
   const socketRef = useRef<WebSocket | null>(null);
   const pingStartRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -28,7 +40,6 @@ export function useAntilink() {
   const connect = useCallback(() => {
     if (typeof window === 'undefined') return;
 
-    // Resolve auth token
     const queryToken = new URLSearchParams(window.location.search).get('token');
     if (queryToken) {
       localStorage.setItem('antilink_token', queryToken);
@@ -65,6 +76,14 @@ export function useAntilink() {
               setPorts(msg.data.ports);
               setTelemetry(msg.data.telemetry);
               setSteps(msg.data.recentSteps);
+              setActiveConversationId(msg.data.activeConversationId);
+              if (msg.data.activeConversationTitle) {
+                setActiveConversationTitle(msg.data.activeConversationTitle);
+              }
+              setConversations(msg.data.conversations || []);
+              setSubagents(msg.data.subagents || []);
+              setTasks(msg.data.tasks || []);
+              setArtifacts(msg.data.artifacts || []);
               if (pingStartRef.current > 0) {
                 setLatencyMs(Math.round(performance.now() - pingStartRef.current));
               }
@@ -84,6 +103,28 @@ export function useAntilink() {
               setActiveConfirmation(msg.payload);
               break;
 
+            case 'CONVERSATIONS_UPDATED':
+              setConversations(msg.conversations);
+              if (activeConversationId) {
+                const current = msg.conversations.find((c) => c.id === activeConversationId);
+                if (current?.title) {
+                  setActiveConversationTitle(current.title);
+                }
+              }
+              break;
+
+            case 'SUBAGENTS_UPDATED':
+              setSubagents(msg.subagents);
+              break;
+
+            case 'TASKS_UPDATED':
+              setTasks(msg.tasks);
+              break;
+
+            case 'ARTIFACTS_UPDATED':
+              setArtifacts(msg.artifacts);
+              break;
+
             case 'PORTS_UPDATED':
               setPorts(msg.ports);
               break;
@@ -101,14 +142,13 @@ export function useAntilink() {
               break;
           }
         } catch {
-          // ignore parse errors
+          // ignore
         }
       };
 
       ws.onclose = () => {
         setStatus('disconnected');
         socketRef.current = null;
-        // Reconnect after 2 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
           connect();
         }, 2000);
@@ -160,6 +200,25 @@ export function useAntilink() {
     [activeConfirmation, sendMessage]
   );
 
+  const switchConversation = useCallback(
+    (conversationId: string) => {
+      sendMessage({ type: 'SWITCH_CONVERSATION', conversationId });
+      setActiveConversationId(conversationId);
+      const target = conversations.find((c) => c.id === conversationId);
+      if (target?.title) {
+        setActiveConversationTitle(target.title);
+      }
+    },
+    [sendMessage, conversations]
+  );
+
+  const killTask = useCallback(
+    (taskId: string) => {
+      sendMessage({ type: 'KILL_TASK', taskId });
+    },
+    [sendMessage]
+  );
+
   const toggleCaffeinate = useCallback(
     (enable: boolean) => {
       sendMessage({ type: 'TOGGLE_CAFFEINATE', enable });
@@ -189,8 +248,16 @@ export function useAntilink() {
     steps,
     activeConfirmation,
     commandOutput,
+    activeConversationId,
+    activeConversationTitle,
+    conversations,
+    subagents,
+    tasks,
+    artifacts,
     sendPrompt,
     confirmTool,
+    switchConversation,
+    killTask,
     toggleCaffeinate,
     scanPorts,
     execCommand,
