@@ -1,0 +1,15 @@
+{
+  "name": "@antilink/shared",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Shared types and event protocols for Antilink",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}

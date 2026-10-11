@@ -1,0 +1,32 @@
+{
+  "name": "antilink",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Mobile-first companion bridge, live agent stream, and multi-port dev preview for Google Antigravity",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "bin": {
+    "antilink": "./bin/antilink.js"
+  },
+  "scripts": {
+    "dev:daemon": "npm run --workspace=packages/daemon dev",
+    "dev:web": "npm run --workspace=apps/web dev",
+    "build:web": "npm run --workspace=apps/web build",
+    "build:daemon": "npm run --workspace=packages/daemon build",
+    "build": "npm run build:web && npm run build:daemon",
+    "start": "node ./bin/antilink.js"
+  },
+  "keywords": [
+    "antigravity",
+    "remote-control",
+    "tunnel",
+    "pwa",
+    "palenight",
+    "devtools"
+  ],
+  "author": "Antilink Team",
+  "license": "MIT"
+}

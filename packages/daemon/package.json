@@ -1,0 +1,25 @@
+{
+  "name": "@antilink/daemon",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Host bridge daemon for Antilink",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@antilink/shared": "1.0.0",
+    "ws": "^8.18.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/ws": "^8.5.14",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

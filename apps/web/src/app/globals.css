@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@theme {
+  --color-palenight-bg: #292D3E;
+  --color-palenight-dark: #1B1E2B;
+  --color-palenight-card: #232635;
+  --color-palenight-active: #2E3245;
+  --color-palenight-border: #2E3245;
+  --color-palenight-fg: #A6ACCD;
+  --color-palenight-bright: #EEFFFF;
+  --color-palenight-muted: #676E95;
+  --color-palenight-mauve: #C792EA;
+  --color-palenight-cyan: #89DDFF;
+  --color-palenight-blue: #82AAFF;
+  --color-palenight-green: #C3E88D;
+  --color-palenight-yellow: #FFCB6B;
+  --color-palenight-orange: #F78C6C;
+  --color-palenight-red: #FF5370;
+
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+html, body {
+  background-color: #292D3E;
+  color: #A6ACCD;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+/* Custom scrollbars matching VS Code */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1B1E2B;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2E3245;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #676E95;
+}
+
+/* Clean micro-transitions */
+.smooth-transition {
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Prevent iOS text auto-zoom */
+@media screen and (max-width: 768px) {
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}

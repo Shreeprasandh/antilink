@@ -1,0 +1,8 @@
+{
+  "appId": "com.antigravity.antilink",
+  "appName": "Antilink",
+  "webDir": "out",
+  "server": {
+    "androidScheme": "https"
+  }
+}
