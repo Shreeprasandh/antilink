@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Send,
   Check,
@@ -16,6 +16,8 @@ import {
   Minimize2,
   HelpCircle,
   Sparkles,
+  ShieldCheck,
+  ExternalLink,
 } from 'lucide-react';
 import type { AgentStep, ToolConfirmationPayload } from '@antilink/shared';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -24,6 +26,7 @@ interface AgentStreamProps {
   steps: AgentStep[];
   activeConfirmation: ToolConfirmationPayload | null;
   activeConversationTitle?: string;
+  remoteControlUrl?: string;
   onConfirmTool: (stepIdx: number, approved: boolean) => void;
   onSendPrompt: (prompt: string) => void;
   onExecCommand: (cmd: string) => void;
@@ -34,18 +37,20 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   steps,
   activeConfirmation,
   activeConversationTitle,
+  remoteControlUrl = 'https://antigravity.google.com/r/fe05edc8-4845-4227-8a3a-6f6eb60335d4-v2?p=c%2Fd933eaf8-272e-4559-89bc-a9c284a5eed0%3Fsection%3Ddefault-cli-project',
   onConfirmTool,
   onSendPrompt,
   onExecCommand,
   onOpenShortcuts,
 }) => {
   const [inputPrompt, setInputPrompt] = useState('');
+  const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({});
   const [expandedThoughts, setExpandedThoughts] = useState<Record<number, boolean>>({});
-  const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
-  const [allToolsExpanded, setAllToolsExpanded] = useState<boolean>(false);
+  const [allExpanded, setAllExpanded] = useState<boolean>(false);
   const [copiedIndex, setCopiedIndex] = useState<string | null>(null);
   const [showSlashMenu, setShowSlashMenu] = useState<boolean>(false);
   const [selectedSlashIndex, setSelectedSlashIndex] = useState<number>(0);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollRef = useRef<boolean>(true);
@@ -132,19 +137,62 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     ? slashCommands.filter((s) => s.cmd.toLowerCase().includes(inputPrompt.toLowerCase()))
     : [];
 
-  // Toggle all tools expanded / collapsed (Ctrl+O parity)
-  const toggleAllTools = useCallback(() => {
-    setAllToolsExpanded((prev) => {
-      const next = !prev;
-      const updated: Record<string, boolean> = {};
-      steps.forEach((s) => {
-        if (s.toolCalls) {
-          s.toolCalls.forEach((_, tIdx) => {
-            updated[`${s.stepIndex}-${tIdx}`] = next;
-          });
+  // Determine which steps are "Final Summaries" vs "Intermediate Steps"
+  // Per directive: "make sure each steps the ai takes is minimized and only the final summary is given expanded"
+  const finalSummaryStepIndices = useMemo(() => {
+    const finalSet = new Set<number>();
+    if (steps.length === 0) return finalSet;
+
+    let lastCandidateIndexInTurn: number | null = null;
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const isUser = step.source === 'USER_EXPLICIT' || step.type === 'USER_INPUT';
+
+      if (isUser) {
+        if (lastCandidateIndexInTurn !== null) {
+          finalSet.add(lastCandidateIndexInTurn);
+          lastCandidateIndexInTurn = null;
         }
+        continue;
+      }
+
+      const isToolOutput = step.type === 'GENERIC';
+      const isSystem = step.type === 'SYSTEM_MESSAGE';
+      const hasTools = Boolean(step.toolCalls && step.toolCalls.length > 0);
+      const hasContent = Boolean(step.content && step.content.trim().length > 0);
+
+      // Only clean assistant responses without pending tool invocations qualify as summaries
+      if (!isToolOutput && !isSystem && !hasTools && hasContent) {
+        lastCandidateIndexInTurn = step.stepIndex;
+      }
+    }
+
+    if (lastCandidateIndexInTurn !== null) {
+      finalSet.add(lastCandidateIndexInTurn);
+    }
+
+    return finalSet;
+  }, [steps]);
+
+  // Determine if latest assistant message or turn is complete and awaiting user direction/permission
+  const isAwaitingApproval = useMemo(() => {
+    if (activeConfirmation) return true;
+    if (steps.length === 0) return false;
+    const lastStep = steps[steps.length - 1];
+    // If the last step in the transcript is from the assistant/system (turn completed, Luna waiting for user!)
+    return lastStep.source !== 'USER_EXPLICIT' && lastStep.type !== 'USER_INPUT';
+  }, [activeConfirmation, steps]);
+
+  // Toggle all steps expanded / collapsed (Ctrl+O parity)
+  const toggleAllSteps = useCallback(() => {
+    setAllExpanded((prev) => {
+      const next = !prev;
+      const updated: Record<number, boolean> = {};
+      steps.forEach((s) => {
+        updated[s.stepIndex] = next;
       });
-      setExpandedTools(updated);
+      setExpandedSteps(updated);
       return next;
     });
   }, [steps]);
@@ -154,12 +202,12 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        toggleAllTools();
+        toggleAllSteps();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleAllTools]);
+  }, [toggleAllSteps]);
 
   // Auto-scroll on new steps
   useEffect(() => {
@@ -186,12 +234,12 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     isAutoScrollRef.current = true;
   };
 
-  const toggleThought = (idx: number) => {
-    setExpandedThoughts((prev) => ({ ...prev, [idx]: !prev[idx] }));
+  const toggleStep = (stepIdx: number) => {
+    setExpandedSteps((prev) => ({ ...prev, [stepIdx]: !prev[stepIdx] }));
   };
 
-  const toggleTool = (toolKey: string) => {
-    setExpandedTools((prev) => ({ ...prev, [toolKey]: !prev[toolKey] }));
+  const toggleThought = (idx: number) => {
+    setExpandedThoughts((prev) => ({ ...prev, [idx]: !prev[idx] }));
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -242,19 +290,19 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
         <div className="flex items-center space-x-2 text-[10px]">
           {/* Ctrl+O Tools Toggle Button */}
           <button
-            onClick={toggleAllTools}
+            onClick={toggleAllSteps}
             className="flex items-center space-x-1 text-palenight-muted hover:text-palenight-bright bg-palenight-card border border-palenight-border px-1.5 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
-            title="Press Ctrl+O to expand or collapse all tool outputs"
+            title="Press Ctrl+O to expand or collapse all intermediate steps"
           >
-            {allToolsExpanded ? (
+            {allExpanded ? (
               <>
                 <Minimize2 className="w-3 h-3 text-palenight-mauve" />
-                <span className="hidden sm:inline">Ctrl+O Collapse</span>
+                <span className="hidden sm:inline">Ctrl+O Minimize</span>
               </>
             ) : (
               <>
                 <Maximize2 className="w-3 h-3 text-palenight-mauve" />
-                <span className="hidden sm:inline">Ctrl+O Expand</span>
+                <span className="hidden sm:inline">Ctrl+O Expand All</span>
               </>
             )}
           </button>
@@ -285,46 +333,126 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             <Bot className="w-8 h-8 text-palenight-border" />
             <p className="text-palenight-fg font-medium">Waiting for active agent session...</p>
             <p className="text-[11px] text-palenight-muted max-w-xs leading-relaxed">
-              Agent responses, reasoning traces, and tool approvals will stream here in real time.
+              Intermediate steps will be minimized and final responses will be expanded in professional layout.
             </p>
           </div>
         )}
 
         {steps.map((step) => {
           const isUser = step.source === 'USER_EXPLICIT' || step.type === 'USER_INPUT';
+          const isFinalSummary = finalSummaryStepIndices.has(step.stepIndex);
           const hasThought = Boolean(step.thinking);
           const isThoughtExpanded = Boolean(expandedThoughts[step.stepIndex]);
 
+          // By default: Final summaries are EXPANDED; Intermediate steps are MINIMIZED
+          const isStepExpanded =
+            expandedSteps[step.stepIndex] !== undefined
+              ? expandedSteps[step.stepIndex]
+              : isFinalSummary || allExpanded;
+
+          // 1. USER PROMPT BUBBLE
+          if (isUser) {
+            return (
+              <div
+                key={step.stepIndex}
+                className="rounded-lg border border-palenight-blue/40 bg-palenight-card p-3 ml-4 sm:ml-12 shadow-sm"
+              >
+                <div className="flex items-center justify-between mb-1.5 pb-1 border-b border-palenight-border/40 text-[10px]">
+                  <div className="flex items-center space-x-1.5">
+                    <User className="w-3.5 h-3.5 text-palenight-blue" />
+                    <span className="text-palenight-blue font-bold">USER</span>
+                    <span className="text-palenight-muted font-mono">#{step.stepIndex}</span>
+                  </div>
+                  <span className="text-palenight-muted font-mono">
+                    {new Date(step.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <div className="text-palenight-bright select-text">
+                  <MarkdownRenderer content={step.content || ''} />
+                </div>
+              </div>
+            );
+          }
+
+          // 2. MINIMIZED INTERMEDIATE MODEL STEP
+          if (!isFinalSummary && !isStepExpanded) {
+            const isToolOutput = step.type === 'GENERIC';
+            const isSystem = step.type === 'SYSTEM_MESSAGE';
+            const toolCount = step.toolCalls?.length || 0;
+
+            let label = 'Execution step';
+            if (toolCount > 0) {
+              const toolNames = step.toolCalls?.map((t) => t.name).join(', ');
+              label = `${toolCount} tool${toolCount > 1 ? 's' : ''}: ${toolNames}`;
+            } else if (isToolOutput) {
+              label = 'Tool output log';
+            } else if (isSystem) {
+              label = 'System notification event';
+            } else if (step.thinking) {
+              label = 'Luna internal reasoning';
+            } else if (step.content) {
+              label = step.content.slice(0, 48).replace(/\n/g, ' ') + '...';
+            }
+
+            return (
+              <div
+                key={step.stepIndex}
+                onClick={() => toggleStep(step.stepIndex)}
+                className="bg-palenight-dark/60 hover:bg-palenight-card/80 border border-palenight-border/60 rounded px-3 py-1.5 flex items-center justify-between transition-colors cursor-pointer select-none text-[11px] font-mono group mr-2 sm:mr-6"
+                title="Click or press Ctrl+O to expand intermediate details"
+              >
+                <div className="flex items-center space-x-2 truncate mr-2">
+                  <ChevronRight className="w-3.5 h-3.5 text-palenight-muted group-hover:text-palenight-mauve shrink-0" />
+                  <span className="text-[10px] text-palenight-muted font-bold">#{step.stepIndex}</span>
+                  <span className="text-palenight-fg truncate">{label}</span>
+                </div>
+
+                <span className="text-[10px] text-palenight-muted shrink-0 bg-palenight-card px-1.5 py-0.2 rounded border border-palenight-border/50 font-mono">
+                  {step.status === 'DONE' ? 'completed' : step.status.toLowerCase()}
+                </span>
+              </div>
+            );
+          }
+
+          // 3. EXPANDED STEP (Final Summary OR User-Expanded Intermediate Step)
           return (
             <div
               key={step.stepIndex}
-              className={`rounded-lg border p-3 transition-colors ${
-                isUser
-                  ? 'bg-palenight-card border-palenight-blue/40 ml-4 sm:ml-8'
-                  : 'bg-palenight-card/70 border-palenight-border mr-2 sm:mr-4'
+              className={`rounded-lg border p-3.5 transition-colors mr-2 sm:mr-6 ${
+                isFinalSummary
+                  ? 'bg-palenight-card/90 border-palenight-border shadow-md'
+                  : 'bg-palenight-card/50 border-palenight-border/60'
               }`}
             >
               {/* Step Header */}
               <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-palenight-border/40 text-[10px]">
                 <div className="flex items-center space-x-1.5">
-                  {isUser ? (
-                    <User className="w-3.5 h-3.5 text-palenight-blue" />
-                  ) : (
-                    <Bot className="w-3.5 h-3.5 text-palenight-mauve" />
-                  )}
-                  <span className={isUser ? 'text-palenight-blue font-bold' : 'text-palenight-mauve font-bold'}>
-                    {isUser ? 'USER' : 'LUNA'}
+                  <Bot className="w-3.5 h-3.5 text-palenight-mauve" />
+                  <span className="text-palenight-mauve font-bold">
+                    {isFinalSummary ? 'LUNA (SUMMARY)' : 'LUNA (STEP)'}
                   </span>
                   <span className="text-palenight-muted font-mono">#{step.stepIndex}</span>
                 </div>
-                <span className="text-palenight-muted font-mono">
-                  {new Date(step.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                </span>
+
+                <div className="flex items-center space-x-2">
+                  <span className="text-palenight-muted font-mono">
+                    {new Date(step.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                  {!isFinalSummary && (
+                    <button
+                      onClick={() => toggleStep(step.stepIndex)}
+                      className="text-palenight-muted hover:text-palenight-fg p-0.5 cursor-pointer"
+                      title="Minimize step"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Collapsible Thinking Block */}
               {hasThought && (
-                <div className="mb-2 bg-palenight-dark/80 rounded border border-palenight-border/50 p-2 text-[11px]">
+                <div className="mb-2.5 bg-palenight-dark/80 rounded border border-palenight-border/50 p-2 text-[11px]">
                   <button
                     onClick={() => toggleThought(step.stepIndex)}
                     className="flex items-center space-x-1 text-palenight-muted hover:text-palenight-fg w-full text-left touch-manipulation cursor-pointer"
@@ -351,91 +479,41 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
                 </div>
               )}
 
-              {/* Tool Calls Execution (Minimized by Default, Toggle via Ctrl+O or Click) */}
+              {/* Tool Calls Execution Cards */}
               {step.toolCalls && step.toolCalls.length > 0 && (
                 <div className="mt-2.5 space-y-1.5">
                   {step.toolCalls.map((tool, tIdx) => {
                     const toolKey = `${step.stepIndex}-${tIdx}`;
-                    const isExpanded = Boolean(expandedTools[toolKey]);
                     const isCopied = copiedIndex === toolKey;
-
-                    // Compute concise target description
-                    const targetSummary =
-                      (tool.args.TargetFile as string) ||
-                      (tool.args.CommandLine as string) ||
-                      (tool.args.query as string) ||
-                      (tool.args.AbsolutePath as string) ||
-                      (tool.args.toolSummary as string) ||
-                      '';
 
                     return (
                       <div
                         key={tIdx}
                         className="bg-palenight-dark border border-palenight-border rounded overflow-hidden text-[11px]"
                       >
-                        {/* Compact Single-Line Bar (Minimized Default) */}
-                        <div
-                          onClick={() => toggleTool(toolKey)}
-                          className="flex items-center justify-between px-2.5 py-1.5 cursor-pointer hover:bg-palenight-card/60 transition-colors select-none"
-                        >
-                          <div className="flex items-center space-x-2 truncate mr-2">
-                            {isExpanded ? (
-                              <ChevronDown className="w-3.5 h-3.5 text-palenight-mauve shrink-0" />
-                            ) : (
-                              <ChevronRight className="w-3.5 h-3.5 text-palenight-mauve shrink-0" />
-                            )}
+                        <div className="flex items-center justify-between px-2.5 py-1.5 bg-palenight-card/50 select-none">
+                          <div className="flex items-center space-x-2 truncate">
                             <Code className="w-3 h-3 text-palenight-cyan shrink-0" />
                             <span className="text-palenight-cyan font-bold">{tool.name}</span>
-                            {targetSummary && (
-                              <span className="text-palenight-muted truncate text-[10px]">
-                                {targetSummary.slice(0, 48)}
-                              </span>
-                            )}
                           </div>
-
-                          <div className="flex items-center space-x-1.5 shrink-0 text-[10px]">
-                            {tool.output && (
-                              <span className="text-palenight-green bg-palenight-card px-1.5 py-0.2 rounded border border-palenight-border font-mono">
-                                completed
-                              </span>
-                            )}
-                          </div>
+                          <button
+                            onClick={() => copyToClipboard(JSON.stringify(tool.args, null, 2), toolKey)}
+                            className="text-palenight-muted hover:text-palenight-fg p-0.5 cursor-pointer"
+                            title="Copy arguments"
+                          >
+                            {isCopied ? <Check className="w-3 h-3 text-palenight-green" /> : <Copy className="w-3 h-3" />}
+                          </button>
                         </div>
 
-                        {/* Expanded Details & Output */}
-                        {isExpanded && (
-                          <div className="p-2.5 border-t border-palenight-border/60 bg-[#1B1E2B] space-y-2">
-                            <div className="flex items-center justify-between text-[10px] text-palenight-muted">
-                              <span>Arguments</span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  copyToClipboard(JSON.stringify(tool.args, null, 2), toolKey);
-                                }}
-                                className="hover:text-palenight-fg flex items-center space-x-1 p-0.5 cursor-pointer"
-                                title="Copy arguments"
-                              >
-                                {isCopied ? (
-                                  <Check className="w-3 h-3 text-palenight-green" />
-                                ) : (
-                                  <Copy className="w-3 h-3" />
-                                )}
-                                <span>{isCopied ? 'copied' : 'copy'}</span>
-                              </button>
-                            </div>
+                        <pre className="text-palenight-fg text-[10px] bg-palenight-bg/90 p-2 overflow-x-auto leading-tight">
+                          {JSON.stringify(tool.args, null, 2)}
+                        </pre>
 
-                            <pre className="text-palenight-fg text-[10px] bg-palenight-bg/90 p-2 rounded border border-palenight-border/60 overflow-x-auto leading-tight">
-                              {JSON.stringify(tool.args, null, 2)}
+                        {tool.output && (
+                          <div className="p-2 border-t border-palenight-border/40 bg-palenight-bg/60">
+                            <pre className="text-palenight-muted text-[10px] max-h-32 overflow-y-auto leading-snug whitespace-pre-wrap">
+                              {tool.output}
                             </pre>
-
-                            {tool.output && (
-                              <div className="border-t border-palenight-border/40 pt-1.5">
-                                <div className="text-[10px] text-palenight-muted mb-1">Output:</div>
-                                <pre className="text-palenight-muted text-[10px] bg-palenight-bg/60 p-2 rounded max-h-36 overflow-y-auto leading-snug whitespace-pre-wrap">
-                                  {tool.output}
-                                </pre>
-                              </div>
-                            )}
                           </div>
                         )}
                       </div>
@@ -447,49 +525,129 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
           );
         })}
 
-        {/* Floating Tool Confirmation Prompt */}
-        {activeConfirmation && (
-          <div className="rounded-lg border border-palenight-yellow bg-palenight-card p-3.5 shadow-xl transition-all">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-palenight-yellow font-bold text-xs uppercase tracking-wider font-mono">
-                Confirmation Required
-              </span>
-              <span className="text-palenight-muted text-[10px] font-mono">
-                Step #{activeConfirmation.stepIdx}
+        {/* Interactive Action Approval & Remote Control Card (Sticky at end when pending direction) */}
+        {isAwaitingApproval && (
+          <div className="rounded-lg border-2 border-palenight-mauve/80 bg-palenight-card p-4 shadow-2xl transition-all mr-2 sm:mr-6 animate-in slide-in-from-bottom-2 duration-150 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2 text-palenight-bright font-bold text-xs font-mono">
+                <ShieldCheck className="w-4 h-4 text-palenight-mauve" />
+                <span>Action Approval & Remote Control</span>
+              </div>
+              <span className="text-[10px] text-palenight-yellow font-mono font-bold bg-palenight-dark px-2.5 py-0.5 rounded border border-palenight-border animate-pulse">
+                {activeConfirmation ? `Confirmation Required: Step #${activeConfirmation.stepIdx}` : 'Awaiting Direction'}
               </span>
             </div>
 
-            <div className="text-palenight-bright text-xs mb-1.5 font-mono">
-              Tool: <span className="text-palenight-cyan font-bold">{activeConfirmation.toolName}</span>
-            </div>
-
-            {activeConfirmation.commandLine && (
-              <pre className="bg-palenight-dark p-2.5 rounded border border-palenight-border text-palenight-fg text-[11px] mb-3 overflow-x-auto font-mono">
-                {activeConfirmation.commandLine}
-              </pre>
-            )}
-
-            {activeConfirmation.targetFile && (
-              <div className="text-palenight-fg text-[11px] mb-3 font-mono">
-                Target: <span className="text-palenight-cyan">{activeConfirmation.targetFile}</span>
+            {/* Tool confirmation details if active */}
+            {activeConfirmation && (
+              <div className="bg-palenight-dark/80 rounded p-2.5 border border-palenight-border/60 text-[11px] font-mono space-y-1">
+                <div className="text-palenight-muted">
+                  Tool: <span className="text-palenight-cyan font-semibold">{activeConfirmation.toolName}</span>
+                </div>
+                {activeConfirmation.commandLine && (
+                  <pre className="text-palenight-fg bg-palenight-bg/80 p-1.5 rounded overflow-x-auto text-[10px]">
+                    {activeConfirmation.commandLine}
+                  </pre>
+                )}
+                {activeConfirmation.targetFile && (
+                  <div className="text-palenight-fg text-[10px]">
+                    Target: <span className="text-palenight-cyan">{activeConfirmation.targetFile}</span>
+                  </div>
+                )}
               </div>
             )}
 
-            <div className="flex space-x-2">
+            {!activeConfirmation && (
+              <p className="text-[11px] text-palenight-fg leading-relaxed">
+                Luna has completed this execution turn and is awaiting your direction. Tap below to approve or decline, or select a steering action.
+              </p>
+            )}
+
+            {/* Instant Action Feedback Toast */}
+            {actionFeedback && (
+              <div className="bg-palenight-mauve/20 border border-palenight-mauve/40 text-palenight-bright text-xs px-3 py-1.5 rounded flex items-center space-x-2 font-mono">
+                <Check className="w-3.5 h-3.5 text-palenight-green" />
+                <span>{actionFeedback}</span>
+              </div>
+            )}
+
+            {/* Primary Action Buttons */}
+            <div className="flex space-x-2.5 pt-0.5">
               <button
-                onClick={() => onConfirmTool(activeConfirmation.stepIdx, true)}
-                className="flex-1 bg-palenight-green text-palenight-dark font-bold py-2 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer"
+                onClick={() => {
+                  if (activeConfirmation) {
+                    onConfirmTool(activeConfirmation.stepIdx, true);
+                  } else {
+                    onSendPrompt('yes');
+                  }
+                  setActionFeedback('Dispatched approval to Luna (yes) ✓');
+                  setTimeout(() => setActionFeedback(null), 3000);
+                }}
+                className="flex-1 bg-palenight-green text-palenight-dark font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
+                title="Send approval to Luna (yes)"
               >
-                <Check className="w-3.5 h-3.5" />
-                <span>Allow</span>
+                <Check className="w-4 h-4" />
+                <span>Accept & Proceed</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  if (activeConfirmation) {
+                    onConfirmTool(activeConfirmation.stepIdx, false);
+                  } else {
+                    onSendPrompt('no');
+                  }
+                  setActionFeedback('Dispatched decline to Luna (no) ✗');
+                  setTimeout(() => setActionFeedback(null), 3000);
+                }}
+                className="flex-1 bg-palenight-red text-palenight-bright font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
+                title="Decline action (no)"
+              >
+                <X className="w-4 h-4" />
+                <span>Decline</span>
+              </button>
+            </div>
+
+            {/* Quick Action Steering Pills */}
+            <div className="flex flex-wrap gap-1.5 pt-1 border-t border-palenight-border/40">
+              <span className="text-[10px] text-palenight-muted py-0.5 mr-1 font-mono">Quick Steer:</span>
+              <button
+                onClick={() => onSendPrompt('npm test')}
+                className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-fg px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
+              >
+                Run Tests
               </button>
               <button
-                onClick={() => onConfirmTool(activeConfirmation.stepIdx, false)}
-                className="flex-1 bg-palenight-red text-palenight-bright font-bold py-2 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer"
+                onClick={() => onSendPrompt('/arise shadows')}
+                className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-mauve px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
               >
-                <X className="w-3.5 h-3.5" />
-                <span>Deny</span>
+                /arise shadows
               </button>
+              <button
+                onClick={() => onSendPrompt('/convene the five monks')}
+                className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-yellow px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
+              >
+                Five Monks
+              </button>
+              <button
+                onClick={() => onSendPrompt('Please review and commit changes')}
+                className="text-[10px] bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 text-palenight-green px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
+              >
+                Review & Commit
+              </button>
+            </div>
+
+            {/* Official Google Remote Control Direct Link */}
+            <div className="pt-1 text-center border-t border-palenight-border/30">
+              <a
+                href={remoteControlUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-palenight-cyan hover:underline inline-flex items-center space-x-1 font-mono"
+              >
+                <span>Direct Google Antigravity Remote Control Link</span>
+                <ExternalLink className="w-2.5 h-2.5" />
+              </a>
             </div>
           </div>
         )}

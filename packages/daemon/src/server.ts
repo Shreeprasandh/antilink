@@ -321,23 +321,88 @@ export class AntilinkDaemonServer {
         });
         break;
 
-      case 'SEND_PROMPT':
-        // Handle quick action commands or record prompt
-        if (msg.prompt.startsWith('git ') || msg.prompt.startsWith('npm ') || msg.prompt.startsWith('node ')) {
-          exec(msg.prompt, { cwd: process.cwd() }, (err, stdout, stderr) => {
+      case 'SEND_PROMPT': {
+        const prompt = msg.prompt.trim();
+        if (!prompt) break;
+
+        // If shell command, execute directly
+        if (/^(git|npm|node|pnpm|cargo|curl)\b/.test(prompt)) {
+          exec(prompt, { cwd: process.cwd() }, (err, stdout, stderr) => {
             this.sendTo(ws, {
               type: 'COMMAND_OUTPUT',
               output: stdout || stderr || (err ? err.message : 'Command executed successfully'),
               exitCode: err ? (err.code || 1) : 0,
             });
           });
+          break;
         }
-        break;
 
-      case 'TOOL_CONFIRM':
-        // Record or broadcast response
+        // 1. Inject keystroke into VS Code terminal (key code 36 = Return)
+        this.injectKeystrokeToTerminal(prompt, true);
+
+        // 2. Dispatch via agy agentapi send-message
+        this.dispatchAgentMessage(prompt, (err) => {
+          this.sendTo(ws, {
+            type: 'COMMAND_OUTPUT',
+            output: err ? `Injected to terminal: "${prompt}"` : `Delivered to Luna: "${prompt}"`,
+            exitCode: 0,
+          });
+        });
         break;
+      }
+
+      case 'TOOL_CONFIRM': {
+        const payload = msg.payload;
+        const answer = payload.approved ? 'yes' : 'no';
+
+        // 1. Inject "yes" or "no" + Return into active terminal
+        this.injectKeystrokeToTerminal(answer, true);
+
+        // 2. Dispatch note to agent
+        const note = payload.approved
+          ? `[Antilink Remote Control] User APPROVED action for step #${payload.stepIdx}`
+          : `[Antilink Remote Control] User DENIED action for step #${payload.stepIdx}`;
+        this.dispatchAgentMessage(note);
+
+        // 3. Broadcast confirmation feedback
+        this.broadcast({
+          type: 'COMMAND_OUTPUT',
+          output: `Step #${payload.stepIdx} ${payload.approved ? 'APPROVED' : 'DENIED'} via Antilink`,
+          exitCode: 0,
+        });
+        break;
+      }
     }
+  }
+
+  private injectKeystrokeToTerminal(text: string, hitReturn: boolean = true): void {
+    try {
+      const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const returnClause = hitReturn
+        ? `-e 'tell application "System Events" to tell process "Code" to key code 36'`
+        : '';
+      const script = `osascript -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
+      exec(script, (err) => {
+        if (err) {
+          const scriptWithActivate = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
+          exec(scriptWithActivate);
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  private dispatchAgentMessage(content: string, callback?: (err: Error | null) => void): void {
+    const activeConvId = this.agentBridge.getActiveConversationId();
+    if (!activeConvId) {
+      if (callback) callback(new Error('No active conversation'));
+      return;
+    }
+    const escaped = content.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    exec(`/Users/shreeprasandhk/.local/bin/agy agentapi send-message "${activeConvId}" "${escaped}"`, (err) => {
+      if (callback) callback(err);
+    });
   }
 
   private setupAgentBridge(): void {
