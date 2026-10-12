@@ -56,6 +56,8 @@ export default function AntilinkApp() {
     steps,
     activeConfirmation,
     commandOutput,
+    isAgentWorking,
+    promptQueue,
     activeConversationId,
     activeConversationTitle,
     conversations,
@@ -63,6 +65,7 @@ export default function AntilinkApp() {
     tasks,
     artifacts,
     sendPrompt,
+    cancelQueuedPrompt,
     confirmTool,
     switchConversation,
     killTask,
@@ -157,9 +160,9 @@ export default function AntilinkApp() {
           />
         </div>
 
-        {/* Dynamic Center Stage Panel */}
+        {/* Dynamic Center Stage Panel - Persistent DOM preserves scroll and state across tab switches */}
         <main className="flex-1 flex flex-col overflow-hidden relative">
-          {activeTab === 'stream' && (
+          <div className={`h-full w-full flex flex-col ${activeTab === 'stream' ? '' : 'hidden'}`}>
             <AgentStream
               steps={steps}
               activeConfirmation={activeConfirmation}
@@ -167,19 +170,22 @@ export default function AntilinkApp() {
               remoteControlUrl={remoteControlUrl}
               userName={userName}
               assistantName={assistantName}
+              isAgentWorking={isAgentWorking}
+              promptQueue={promptQueue}
+              onCancelQueuedPrompt={cancelQueuedPrompt}
               onConfirmTool={confirmTool}
               onSendPrompt={sendPrompt}
               onExecCommand={execCommand}
               onOpenShortcuts={() => setIsShortcutsOpen(true)}
               onOpenSettings={() => setIsSettingsOpen(true)}
             />
-          )}
+          </div>
 
-          {activeTab === 'preview' && (
+          <div className={`h-full w-full flex flex-col ${activeTab === 'preview' ? '' : 'hidden'}`}>
             <PreviewMatrix ports={ports} onScanPorts={scanPorts} />
-          )}
+          </div>
 
-          {activeTab === 'git' && (
+          <div className={`h-full w-full flex flex-col ${activeTab === 'git' ? '' : 'hidden'}`}>
             <GitViewer
               onExecCommand={execCommand}
               commandOutput={commandOutput}
@@ -188,9 +194,9 @@ export default function AntilinkApp() {
               userEmail={userEmail}
               userName={userName}
             />
-          )}
+          </div>
 
-          {activeTab === 'cockpit' && (
+          <div className={`h-full w-full flex flex-col ${activeTab === 'cockpit' ? '' : 'hidden'}`}>
             <Cockpit
               telemetry={telemetry}
               tunnelUrl={tunnelUrl}
@@ -198,7 +204,7 @@ export default function AntilinkApp() {
               onToggleCaffeinate={toggleCaffeinate}
               onExecCommand={execCommand}
             />
-          )}
+          </div>
         </main>
 
         {/* Mobile Bottom Navigation Activity Bar */}

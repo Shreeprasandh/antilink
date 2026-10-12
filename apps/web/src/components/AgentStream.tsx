@@ -19,8 +19,9 @@ import {
   ShieldCheck,
   ExternalLink,
   Settings,
+  Clock,
 } from 'lucide-react';
-import type { AgentStep, ToolConfirmationPayload } from '@antilink/shared';
+import type { AgentStep, ToolConfirmationPayload, QueuedPrompt } from '@antilink/shared';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
 // Helper function to produce concise, informative 2-5 word step summaries
@@ -82,6 +83,9 @@ interface AgentStreamProps {
   remoteControlUrl?: string;
   userName?: string;
   assistantName?: string;
+  isAgentWorking?: boolean;
+  promptQueue?: QueuedPrompt[];
+  onCancelQueuedPrompt?: (promptId: string) => void;
   onConfirmTool: (stepIdx: number, approved: boolean, optionNumber?: number, commandLine?: string) => void;
   onSendPrompt: (prompt: string) => void;
   onExecCommand: (cmd: string) => void;
@@ -96,6 +100,9 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   remoteControlUrl = 'https://antigravity.google.com/r/fe05edc8-4845-4227-8a3a-6f6eb60335d4-v2?p=c%2Fd933eaf8-272e-4559-89bc-a9c284a5eed0%3Fsection%3Ddefault-cli-project',
   userName = 'Shreeprasandh',
   assistantName = 'Luna',
+  isAgentWorking = false,
+  promptQueue = [],
+  onCancelQueuedPrompt,
   onConfirmTool,
   onSendPrompt,
   onExecCommand,
@@ -115,6 +122,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollRef = useRef<boolean>(true);
+  const initialScrollDoneRef = useRef<boolean>(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Merge steps with optimistic user prompts
@@ -266,18 +274,18 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
       };
     }
 
-    // 2. Check if the latest step in conversation is an uncompleted tool call (waiting for permission in terminal!)
+    // 2. Check if the latest step in conversation is explicitly waiting for confirmation
     if (allSteps.length > 0) {
       const lastStep = allSteps[allSteps.length - 1];
       if (
         !dismissedSteps.has(lastStep.stepIndex) &&
         lastStep.source !== 'USER_EXPLICIT' &&
         lastStep.type !== 'USER_INPUT' &&
+        lastStep.status === 'WAITING_CONFIRMATION' &&
         lastStep.toolCalls &&
         lastStep.toolCalls.length > 0
       ) {
         const tool = lastStep.toolCalls[0];
-        // ONLY run_command triggers interactive CLI permission prompts in Antigravity
         if (tool.name === 'run_command') {
           const rawCmd = (tool.args.CommandLine as string) || (tool.args.command as string) || '';
           const cmd = rawCmd.replace(/^["']|["']$/g, '').trim();
@@ -371,9 +379,26 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     return () => window.removeEventListener('keydown', handleApprovalKey);
   }, [pendingApproval, onConfirmTool]);
 
-  // Auto-scroll on new steps
+  // Reset initial scroll flag when switching conversation title
   useEffect(() => {
-    if (isAutoScrollRef.current && scrollContainerRef.current) {
+    initialScrollDoneRef.current = false;
+  }, [activeConversationTitle]);
+
+  // Auto-scroll on steps / confirmation
+  useEffect(() => {
+    if (!scrollContainerRef.current) return;
+
+    // On initial mount / reload: jump instantly to bottom without smooth scrolling animation
+    if (!initialScrollDoneRef.current) {
+      if (allSteps.length > 0) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+        initialScrollDoneRef.current = true;
+      }
+      return;
+    }
+
+    // Incremental steps: only smooth-scroll if user is already at bottom
+    if (isAutoScrollRef.current) {
       scrollContainerRef.current.scrollTo({
         top: scrollContainerRef.current.scrollHeight,
         behavior: 'smooth',
@@ -395,16 +420,21 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
       setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex));
     }
 
-    // Optimistic UI prompt bubble: immediate display without waiting for network round-trip
-    const optimisticStep: AgentStep = {
-      stepIndex: Date.now(),
-      source: 'USER_EXPLICIT',
-      type: 'USER_INPUT',
-      status: 'DONE',
-      createdAt: new Date().toISOString(),
-      content: promptText,
-    };
-    setOptimisticSteps((prev) => [...prev, optimisticStep]);
+    // If agent is busy, prompt will be queued in waiting state rather than immediate execution
+    if (!isAgentWorking) {
+      const optimisticStep: AgentStep = {
+        stepIndex: Date.now(),
+        source: 'USER_EXPLICIT',
+        type: 'USER_INPUT',
+        status: 'DONE',
+        createdAt: new Date().toISOString(),
+        content: promptText,
+      };
+      setOptimisticSteps((prev) => [...prev, optimisticStep]);
+    } else {
+      setActionFeedback('Prompt waiting in queue — will send when Luna finishes current task');
+      setTimeout(() => setActionFeedback(null), 3500);
+    }
 
     onSendPrompt(promptText);
     setInputPrompt('');
@@ -458,11 +488,22 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-palenight-bg font-mono select-none">
       {/* Top Banner & Control Strip */}
       <div className="h-8 bg-palenight-dark border-b border-palenight-border px-3 flex items-center justify-between text-[11px] text-palenight-muted shrink-0 select-none">
-        <span className="flex items-center space-x-1.5 truncate max-w-[60%]">
+        <span className="flex items-center space-x-1.5 truncate max-w-[65%]">
           <Terminal className="w-3.5 h-3.5 text-palenight-mauve shrink-0" />
           <span className="text-palenight-bright font-semibold truncate">
             {activeConversationTitle || 'TERMINAL & STREAM'}
           </span>
+          {isAgentWorking ? (
+            <span className="flex items-center space-x-1 text-palenight-yellow bg-palenight-yellow/10 border border-palenight-yellow/30 px-1.5 py-0.2 rounded text-[9px] font-mono shrink-0 ml-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-palenight-yellow animate-ping shrink-0" />
+              <span>WORKING</span>
+            </span>
+          ) : (
+            <span className="flex items-center space-x-1 text-palenight-green bg-palenight-green/10 border border-palenight-green/30 px-1.5 py-0.2 rounded text-[9px] font-mono shrink-0 ml-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-palenight-green shrink-0" />
+              <span>IDLE</span>
+            </span>
+          )}
         </span>
 
         <div className="flex items-center space-x-2 text-[10px]">
@@ -870,7 +911,67 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             </div>
           </div>
         )}
+
+        {/* Waiting / Queued Prompts Container */}
+        {promptQueue && promptQueue.length > 0 && (
+          <div className="space-y-2 mr-2 sm:mr-6 animate-in slide-in-from-bottom-2 duration-150">
+            {promptQueue.map((item, qIdx) => (
+              <div
+                key={item.id}
+                className="rounded-lg border border-palenight-yellow/50 bg-palenight-card/90 p-3.5 shadow-lg space-y-2"
+              >
+                <div className="flex items-center justify-between pb-1.5 border-b border-palenight-border/50 text-[10px]">
+                  <div className="flex items-center space-x-1.5">
+                    <Clock className="w-3.5 h-3.5 text-palenight-yellow animate-pulse shrink-0" />
+                    <span className="text-palenight-yellow font-bold uppercase tracking-wider">
+                      WAITING TO SEND (QUEUED #{qIdx + 1})
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[10px] text-palenight-muted font-mono">
+                      {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    {onCancelQueuedPrompt && (
+                      <button
+                        onClick={() => onCancelQueuedPrompt(item.id)}
+                        className="text-palenight-red hover:text-palenight-bright text-[10px] bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-red/40 hover:border-palenight-red cursor-pointer flex items-center space-x-1 transition-colors"
+                        title="Cancel this queued prompt"
+                      >
+                        <X className="w-3 h-3" />
+                        <span>Cancel</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-palenight-muted leading-relaxed">
+                  Luna is currently executing. This message will automatically dispatch as soon as she completes the active task.
+                </div>
+
+                <div className="bg-palenight-dark rounded p-2.5 border border-palenight-border/60 text-palenight-bright select-text text-xs leading-relaxed font-mono">
+                  {item.text}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
+
+      {/* Floating Action Feedback Toast */}
+      {actionFeedback && (
+        <div className="mx-3 mb-1 bg-palenight-card border border-palenight-yellow/50 text-palenight-yellow px-3 py-1.5 rounded text-[11px] font-mono flex items-center justify-between shadow-lg animate-in fade-in slide-in-from-bottom-1 duration-150 z-30">
+          <span className="flex items-center space-x-1.5">
+            <Clock className="w-3.5 h-3.5 animate-spin shrink-0" />
+            <span>{actionFeedback}</span>
+          </span>
+          <button
+            onClick={() => setActionFeedback(null)}
+            className="text-palenight-muted hover:text-palenight-fg p-0.5 ml-2 cursor-pointer"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
       {/* Floating Slash Commands Autocomplete Menu */}
       {showSlashMenu && filteredCommands.length > 0 && (
@@ -933,14 +1034,18 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
           type="text"
           value={inputPrompt}
           onChange={handleInputChange}
-          placeholder="Type a message or / for commands..."
+          placeholder={
+            isAgentWorking
+              ? "Luna is working... Type to queue a message"
+              : "Type a message or / for commands..."
+          }
           className="flex-1 bg-palenight-bg border border-palenight-border text-palenight-bright px-3 py-2 rounded-md text-xs sm:text-xs focus:outline-none focus:border-palenight-mauve placeholder-palenight-muted font-mono transition-colors"
         />
         <button
           type="submit"
           disabled={!inputPrompt.trim()}
           className="bg-palenight-mauve text-palenight-dark font-bold p-2.5 rounded-md disabled:opacity-30 active:scale-95 transition-all touch-manipulation shrink-0 cursor-pointer"
-          title="Send message to Luna"
+          title={isAgentWorking ? "Queue message for Luna" : "Send message to Luna"}
         >
           <Send className="w-4 h-4" />
         </button>

@@ -11,6 +11,7 @@ import type {
   AntilinkServerMessage,
   AntilinkInitialState,
   ToolConfirmationResponse,
+  QueuedPrompt,
 } from '@antilink/shared';
 import { ReverseProxyManager } from './reverseProxy.js';
 import { PortScanner } from './portScanner.js';
@@ -33,6 +34,7 @@ export class AntilinkDaemonServer {
   private server: http.Server;
   private wss: WebSocketServer;
   private connectedSockets: Set<WebSocket> = new Set();
+  private promptQueue: QueuedPrompt[] = [];
 
   private reverseProxy: ReverseProxyManager;
   private portScanner: PortScanner;
@@ -326,13 +328,44 @@ export class AntilinkDaemonServer {
         const prompt = msg.prompt.trim();
         if (!prompt) break;
 
-        // Dispatch prompt to Luna via official agy agentapi
+        // If Luna is actively working on a task, queue the prompt until current turn finishes
+        if (this.agentBridge.isAgentWorking()) {
+          const queued: QueuedPrompt = {
+            id: `queue-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+            text: prompt,
+            timestamp: new Date().toISOString(),
+            conversationId: this.agentBridge.getActiveConversationId() || '',
+          };
+          this.promptQueue.push(queued);
+          this.broadcast({
+            type: 'PROMPT_QUEUE_UPDATED',
+            queue: this.promptQueue,
+          });
+          this.sendTo(ws, {
+            type: 'COMMAND_OUTPUT',
+            output: `Prompt waiting in queue (will send when Luna finishes current task): "${prompt}"`,
+            exitCode: 0,
+          });
+          break;
+        }
+
+        // Luna is idle: dispatch prompt immediately
+        this.agentBridge.notifyAgentStarted();
         this.dispatchAgentMessage(prompt, (err) => {
           this.sendTo(ws, {
             type: 'COMMAND_OUTPUT',
             output: err ? `Error delivering prompt to Luna: ${err.message}` : `Delivered to Luna: "${prompt}"`,
             exitCode: err ? 1 : 0,
           });
+        });
+        break;
+      }
+
+      case 'CANCEL_QUEUED_PROMPT': {
+        this.promptQueue = this.promptQueue.filter((p) => p.id !== msg.promptId);
+        this.broadcast({
+          type: 'PROMPT_QUEUE_UPDATED',
+          queue: this.promptQueue,
         });
         break;
       }
@@ -349,12 +382,12 @@ export class AntilinkDaemonServer {
           choice = '1'; // Yes, run command
         }
 
-        // If choice is 2 or 3, persist rule to settings.json
-        if (choice === '2' || choice === '3') {
+        // Always persist approved command prefix to settings.json for uninterrupted future runs
+        if (choice === '1' || choice === '2' || choice === '3') {
           this.persistAllowedCommand(payload.commandLine);
         }
 
-        // 1. Inject the option number + Return into the CLI terminal
+        // 1. Inject option number into the active terminal
         this.injectKeystrokeToTerminal(choice, true);
 
         // 2. Broadcast confirmation feedback
@@ -396,14 +429,31 @@ export class AntilinkDaemonServer {
   private injectKeystrokeToTerminal(text: string, hitReturn: boolean = true): void {
     try {
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const returnClause = hitReturn
-        ? `-e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to key code 36'`
-        : '';
-      // Guaranteed terminal focus: Activates VS Code, focuses integrated Terminal via View menu, then keystrokes
-      const script = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to click menu item "Terminal" of menu 1 of menu bar item "View" of menu bar 1' -e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
+      // Reliable terminal focus via Command Palette 'Terminal: Focus Terminal', keystroke, and restore frontmost app
+      const script = `osascript -e '
+tell application "System Events"
+  set frontApp to name of first process whose frontmost is true
+  tell application "Visual Studio Code" to activate
+  delay 0.08
+  tell process "Code"
+    keystroke "P" using {command down, shift down}
+    delay 0.12
+    keystroke "Terminal: Focus Terminal"
+    delay 0.12
+    key code 36
+    delay 0.12
+    keystroke "${escaped}"
+    ${hitReturn ? 'delay 0.06\nkey code 36' : ''}
+  end tell
+  delay 0.08
+  if frontApp is not "Code" and frontApp is not "Visual Studio Code" then
+    tell application frontApp to activate
+  end if
+end tell
+'`;
       exec(script, (err) => {
         if (err) {
-          const fallback = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.05' -e 'tell application "System Events" to keystroke "${escaped}"' ${hitReturn ? "-e 'delay 0.05' -e 'tell application \"System Events\" to key code 36'" : ''}`;
+          const fallback = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.08' -e 'tell application "System Events" to keystroke "${escaped}"' ${hitReturn ? "-e 'delay 0.05' -e 'tell application \"System Events\" to key code 36'" : ''}`;
           exec(fallback);
         }
       });
@@ -424,6 +474,32 @@ export class AntilinkDaemonServer {
     });
   }
 
+  private processNextQueuedPrompt(): void {
+    if (this.promptQueue.length === 0) return;
+
+    const nextPrompt = this.promptQueue.shift();
+    if (!nextPrompt) return;
+
+    this.broadcast({
+      type: 'PROMPT_QUEUE_UPDATED',
+      queue: this.promptQueue,
+    });
+
+    // Small debounce (350ms) to ensure Cascade CLI input prompt has fully stabilized
+    setTimeout(() => {
+      this.agentBridge.notifyAgentStarted();
+      this.dispatchAgentMessage(nextPrompt.text, (err) => {
+        this.broadcast({
+          type: 'COMMAND_OUTPUT',
+          output: err
+            ? `Error delivering queued prompt to Luna: ${err.message}`
+            : `Queued prompt sent to Luna: "${nextPrompt.text}"`,
+          exitCode: err ? 1 : 0,
+        });
+      });
+    }, 350);
+  }
+
   private setupAgentBridge(): void {
     this.agentBridge.on('step_added', (step) => {
       this.broadcast({
@@ -440,6 +516,17 @@ export class AntilinkDaemonServer {
       this.broadcast({
         type: 'TOOL_CONFIRM_REQUEST',
         payload,
+      });
+    });
+
+    this.agentBridge.on('agent_idle', () => {
+      this.processNextQueuedPrompt();
+    });
+
+    this.agentBridge.on('agent_status_changed', (isWorking) => {
+      this.broadcast({
+        type: 'AGENT_STATUS_CHANGED',
+        isWorking,
       });
     });
   }
@@ -487,6 +574,8 @@ export class AntilinkDaemonServer {
       tasks: this.agentBridge.getTasks(),
       artifacts: this.agentBridge.getArtifacts(),
       recentSteps: this.agentBridge.getRecentSteps(),
+      isAgentWorking: this.agentBridge.isAgentWorking(),
+      promptQueue: this.promptQueue,
     };
   }
 

@@ -94,11 +94,19 @@ export interface ToolConfirmationResponse {
   reason?: string;
 }
 
+export interface QueuedPrompt {
+  id: string;
+  text: string;
+  timestamp: string;
+  conversationId: string;
+}
+
 export type AntilinkClientMessage =
   | { type: 'AUTH'; token: string }
   | { type: 'GET_STATE' }
   | { type: 'SWITCH_CONVERSATION'; conversationId: string }
   | { type: 'SEND_PROMPT'; prompt: string }
+  | { type: 'CANCEL_QUEUED_PROMPT'; promptId: string }
   | { type: 'TOOL_CONFIRM'; payload: ToolConfirmationResponse }
   | { type: 'TOGGLE_CAFFEINATE'; enable: boolean }
   | { type: 'SCAN_PORTS' }
@@ -119,6 +127,8 @@ export type AntilinkServerMessage =
   | { type: 'PORTS_UPDATED'; ports: DiscoveredPort[] }
   | { type: 'TELEMETRY_UPDATED'; telemetry: SystemTelemetry }
   | { type: 'TUNNEL_UPDATED'; tunnelUrl: string | null }
+  | { type: 'PROMPT_QUEUE_UPDATED'; queue: QueuedPrompt[] }
+  | { type: 'AGENT_STATUS_CHANGED'; isWorking: boolean }
   | { type: 'COMMAND_OUTPUT'; output: string; exitCode?: number };
 
 export interface AntilinkInitialState {
@@ -134,4 +144,6 @@ export interface AntilinkInitialState {
   tasks: BackgroundTaskInfo[];
   artifacts: ArtifactInfo[];
   recentSteps: AgentStep[];
+  isAgentWorking?: boolean;
+  promptQueue?: QueuedPrompt[];
 }

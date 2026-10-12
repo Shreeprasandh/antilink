@@ -52,6 +52,27 @@ export class PortScanner {
     });
   }
 
+  private async isDevServer(port: number): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 350);
+      const res = await fetch(`http://127.0.0.1:${port}/`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      const serverHeader = res.headers.get('server') || '';
+      // Exclude Apple AirPlay / AirTunes system daemons on port 5000 / 7000
+      if (serverHeader.toLowerCase().includes('airtunes')) {
+        return false;
+      }
+      return true;
+    } catch {
+      // If it responded to TCP but refused HTTP on known macOS system ports, ignore
+      if (port === 5000 || port === 7000) return false;
+      return true;
+    }
+  }
+
   public async scan(): Promise<DiscoveredPort[]> {
     const allCandidates = [
       ...CANDIDATE_PORTS,
@@ -70,6 +91,9 @@ export class PortScanner {
       allCandidates.map(async (candidate) => {
         const isOpen = await this.checkPort(candidate.port);
         if (isOpen) {
+          const isDev = await this.isDevServer(candidate.port);
+          if (!isDev) return;
+
           results.push({
             port: candidate.port,
             name: candidate.name,

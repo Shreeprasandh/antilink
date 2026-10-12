@@ -12,6 +12,7 @@ import type {
   SubagentInfo,
   BackgroundTaskInfo,
   ArtifactInfo,
+  QueuedPrompt,
 } from '@antilink/shared';
 
 export function useAntilink() {
@@ -24,6 +25,8 @@ export function useAntilink() {
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [activeConfirmation, setActiveConfirmation] = useState<ToolConfirmationPayload | null>(null);
   const [commandOutput, setCommandOutput] = useState<{ output: string; exitCode?: number } | null>(null);
+  const [isAgentWorking, setIsAgentWorking] = useState<boolean>(false);
+  const [promptQueue, setPromptQueue] = useState<QueuedPrompt[]>([]);
 
   // Full Antigravity Parity states
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -84,6 +87,8 @@ export function useAntilink() {
               setSubagents(msg.data.subagents || []);
               setTasks(msg.data.tasks || []);
               setArtifacts(msg.data.artifacts || []);
+              setIsAgentWorking(Boolean(msg.data.isAgentWorking));
+              setPromptQueue(msg.data.promptQueue || []);
               if (pingStartRef.current > 0) {
                 setLatencyMs(Math.round(performance.now() - pingStartRef.current));
               }
@@ -135,6 +140,14 @@ export function useAntilink() {
 
             case 'TUNNEL_UPDATED':
               setTunnelUrl(msg.tunnelUrl);
+              break;
+
+            case 'PROMPT_QUEUE_UPDATED':
+              setPromptQueue(msg.queue);
+              break;
+
+            case 'AGENT_STATUS_CHANGED':
+              setIsAgentWorking(msg.isWorking);
               break;
 
             case 'COMMAND_OUTPUT':
@@ -240,6 +253,13 @@ export function useAntilink() {
     [sendMessage]
   );
 
+  const cancelQueuedPrompt = useCallback(
+    (promptId: string) => {
+      sendMessage({ type: 'CANCEL_QUEUED_PROMPT', promptId });
+    },
+    [sendMessage]
+  );
+
   return {
     status,
     latencyMs,
@@ -250,6 +270,8 @@ export function useAntilink() {
     steps,
     activeConfirmation,
     commandOutput,
+    isAgentWorking,
+    promptQueue,
     activeConversationId,
     activeConversationTitle,
     conversations,
@@ -257,6 +279,7 @@ export function useAntilink() {
     tasks,
     artifacts,
     sendPrompt,
+    cancelQueuedPrompt,
     confirmTool,
     switchConversation,
     killTask,

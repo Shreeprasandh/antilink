@@ -22,6 +22,7 @@ export class AgentBridge extends EventEmitter {
   private fileWatcher: fs.FSWatcher | null = null;
   private pollInterval: NodeJS.Timeout | null = null;
   private recentSteps: AgentStep[] = [];
+  private wasWorking: boolean = false;
 
   constructor() {
     super();
@@ -31,9 +32,11 @@ export class AgentBridge extends EventEmitter {
 
   public init(): void {
     this.discoverActiveConversation();
+    this.wasWorking = this.isAgentWorking();
     this.pollInterval = setInterval(() => {
       this.checkAndReadTranscript();
-    }, 1500);
+      this.checkWorkingState();
+    }, 800);
   }
 
   public stop(): void {
@@ -44,6 +47,76 @@ export class AgentBridge extends EventEmitter {
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
+    }
+  }
+
+  public notifyAgentStarted(): void {
+    this.wasWorking = true;
+    this.emit('agent_status_changed', true);
+    this.emit('agent_busy');
+  }
+
+  public isAgentWorking(): boolean {
+    if (!this.activeConversationId) return false;
+
+    // 1. Authoritative SQLite database check (read-only, sub-millisecond)
+    if (fs.existsSync(this.dbPath)) {
+      try {
+        const stdout = execSync(
+          `/usr/bin/sqlite3 -readonly "${this.dbPath}" "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = '${this.activeConversationId}';"`,
+          { encoding: 'utf-8', timeout: 800 }
+        );
+        const line = stdout.trim();
+        if (line) {
+          const [status, notFullyIdle] = line.split('|');
+          if (status === 'CASCADE_RUN_STATUS_RUNNING' || notFullyIdle === '1') {
+            return true;
+          }
+          if (status === 'CASCADE_RUN_STATUS_IDLE' || notFullyIdle === '0') {
+            return false;
+          }
+        }
+      } catch {
+        // fallback to transcript / memory analysis
+      }
+    }
+
+    // 2. Transcript & step analysis fallback
+    if (this.recentSteps.length > 0) {
+      const lastStep = this.recentSteps[this.recentSteps.length - 1];
+      if (lastStep.source === 'USER_EXPLICIT' || lastStep.type === 'USER_INPUT') {
+        return true;
+      }
+      if (lastStep.status === 'PENDING' || lastStep.status === 'WAITING_CONFIRMATION') {
+        return true;
+      }
+      if (lastStep.toolCalls && lastStep.toolCalls.some((t) => !t.output)) {
+        return true;
+      }
+      if (lastStep.type === 'GENERIC') {
+        return true;
+      }
+      if (lastStep.type === 'PLANNER_RESPONSE' && lastStep.toolCalls && lastStep.toolCalls.length > 0) {
+        return true;
+      }
+      if (lastStep.type === 'PLANNER_RESPONSE' && (!lastStep.toolCalls || lastStep.toolCalls.length === 0)) {
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  public checkWorkingState(): void {
+    const currentlyWorking = this.isAgentWorking();
+    if (this.wasWorking !== currentlyWorking) {
+      this.wasWorking = currentlyWorking;
+      this.emit('agent_status_changed', currentlyWorking);
+      if (!currentlyWorking) {
+        this.emit('agent_idle');
+      } else {
+        this.emit('agent_busy');
+      }
     }
   }
 
@@ -417,6 +490,7 @@ export class AgentBridge extends EventEmitter {
               // ignore
             }
           }
+          this.checkWorkingState();
         });
       }
     } catch {
