@@ -90,6 +90,7 @@ export interface ToolConfirmationResponse {
   approved: boolean;
   decision?: 'allow' | 'deny';
   optionNumber?: number; // 1, 2, 3, or 4
+  commandLine?: string;
   reason?: string;
 }
 

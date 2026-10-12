@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Keyboard,
   User,
+  Settings,
 } from 'lucide-react';
 import type { SystemTelemetry } from '@antilink/shared';
 
@@ -26,6 +27,7 @@ interface HeaderProps {
   onOpenAuxiliary?: () => void;
   onToggleCaffeinate?: (enable: boolean) => void;
   onOpenShortcuts?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -41,6 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuxiliary,
   onToggleCaffeinate,
   onOpenShortcuts,
+  onOpenSettings,
 }) => {
   const isConnected = status === 'connected';
   const isCaffeinateOn = Boolean(telemetry?.caffeinateActive);
@@ -174,6 +177,17 @@ export const Header: React.FC<HeaderProps> = ({
             title="Open Auxiliary Panels (Cmd+B)"
           >
             <PanelRight className="w-4 h-4" />
+          </button>
+        )}
+
+        {/* Identity & Preferences Settings Button */}
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            className="text-palenight-muted hover:text-palenight-bright p-1 rounded hover:bg-palenight-card active:scale-95 transition-transform touch-manipulation cursor-pointer"
+            title="Settings & Identity (Name, Assistant, Account)"
+          >
+            <Settings className="w-4 h-4" />
           </button>
         )}
       </div>

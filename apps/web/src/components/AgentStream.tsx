@@ -18,19 +18,75 @@ import {
   Sparkles,
   ShieldCheck,
   ExternalLink,
+  Settings,
 } from 'lucide-react';
 import type { AgentStep, ToolConfirmationPayload } from '@antilink/shared';
 import { MarkdownRenderer } from './MarkdownRenderer';
+
+// Helper function to produce concise, informative 2-5 word step summaries
+function formatStepSummary(step: AgentStep): string {
+  if (step.toolCalls && step.toolCalls.length > 0) {
+    const tool = step.toolCalls[0];
+    const args = tool.args || {};
+    if (typeof args.toolSummary === 'string' && args.toolSummary.trim()) {
+      return args.toolSummary.trim();
+    }
+    if (typeof args.toolAction === 'string' && args.toolAction.trim()) {
+      return args.toolAction.trim();
+    }
+    const toolName = tool.name;
+    if (toolName === 'view_file') {
+      const file = (args.AbsolutePath as string) || (args.path as string) || '';
+      const base = file ? file.split('/').filter(Boolean).pop() : 'file';
+      return `Reading ${base}`;
+    }
+    if (toolName === 'write_to_file') {
+      const file = (args.TargetFile as string) || (args.path as string) || '';
+      const base = file ? file.split('/').filter(Boolean).pop() : 'file';
+      return `Writing ${base}`;
+    }
+    if (toolName === 'replace_file_content') {
+      const file = (args.TargetFile as string) || (args.path as string) || '';
+      const base = file ? file.split('/').filter(Boolean).pop() : 'file';
+      return `Editing ${base}`;
+    }
+    if (toolName === 'run_command') {
+      const cmd = ((args.CommandLine as string) || (args.command as string) || '').replace(/^["']|["']$/g, '').trim();
+      const tokens = cmd.split(/\s+/).slice(0, 3).join(' ');
+      return tokens ? `Running ${tokens}` : 'Running command';
+    }
+    if (toolName === 'search_web') {
+      const query = (args.query as string) || '';
+      return query ? `Searching: ${query.slice(0, 18)}` : 'Searching web';
+    }
+    if (toolName === 'read_url_content') return 'Fetching URL';
+    if (toolName === 'manage_task') return 'Managing task';
+    if (toolName === 'invoke_subagent') return 'Invoking subagent';
+    return `Tool: ${toolName}`;
+  }
+  if (step.type === 'GENERIC') return 'Command output log';
+  if (step.type === 'SYSTEM_MESSAGE') return 'System notification';
+  if (step.thinking && (!step.content || !step.content.trim())) return 'Reasoning & planning';
+  if (step.content && step.content.trim()) {
+    const firstLine = step.content.trim().split('\n')[0].replace(/^[#*>\-\s]+/, '');
+    const words = firstLine.split(/\s+/).slice(0, 5).join(' ');
+    return words ? `${words}...` : 'Luna response';
+  }
+  return 'Execution step';
+}
 
 interface AgentStreamProps {
   steps: AgentStep[];
   activeConfirmation: ToolConfirmationPayload | null;
   activeConversationTitle?: string;
   remoteControlUrl?: string;
-  onConfirmTool: (stepIdx: number, approved: boolean, optionNumber?: number) => void;
+  userName?: string;
+  assistantName?: string;
+  onConfirmTool: (stepIdx: number, approved: boolean, optionNumber?: number, commandLine?: string) => void;
   onSendPrompt: (prompt: string) => void;
   onExecCommand: (cmd: string) => void;
   onOpenShortcuts?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const AgentStream: React.FC<AgentStreamProps> = ({
@@ -38,12 +94,16 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   activeConfirmation,
   activeConversationTitle,
   remoteControlUrl = 'https://antigravity.google.com/r/fe05edc8-4845-4227-8a3a-6f6eb60335d4-v2?p=c%2Fd933eaf8-272e-4559-89bc-a9c284a5eed0%3Fsection%3Ddefault-cli-project',
+  userName = 'Shreeprasandh',
+  assistantName = 'Luna',
   onConfirmTool,
   onSendPrompt,
   onExecCommand,
   onOpenShortcuts,
+  onOpenSettings,
 }) => {
   const [inputPrompt, setInputPrompt] = useState('');
+  const [optimisticSteps, setOptimisticSteps] = useState<AgentStep[]>([]);
   const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({});
   const [expandedThoughts, setExpandedThoughts] = useState<Record<number, boolean>>({});
   const [allExpanded, setAllExpanded] = useState<boolean>(false);
@@ -56,6 +116,15 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollRef = useRef<boolean>(true);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Merge steps with optimistic user prompts
+  const allSteps = useMemo(() => {
+    if (optimisticSteps.length === 0) return steps;
+    const pendingOptimistic = optimisticSteps.filter(
+      (opt) => !steps.some((s) => (s.source === 'USER_EXPLICIT' || s.type === 'USER_INPUT') && s.content === opt.content)
+    );
+    return [...steps, ...pendingOptimistic];
+  }, [steps, optimisticSteps]);
 
   // Available Slash Commands & Custom Protocols
   const slashCommands = [
@@ -142,12 +211,12 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   // Per directive: "make sure each steps the ai takes is minimized and only the final summary is given expanded"
   const finalSummaryStepIndices = useMemo(() => {
     const finalSet = new Set<number>();
-    if (steps.length === 0) return finalSet;
+    if (allSteps.length === 0) return finalSet;
 
     let lastCandidateIndexInTurn: number | null = null;
 
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
+    for (let i = 0; i < allSteps.length; i++) {
+      const step = allSteps[i];
       const isUser = step.source === 'USER_EXPLICIT' || step.type === 'USER_INPUT';
 
       if (isUser) {
@@ -174,16 +243,16 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     }
 
     return finalSet;
-  }, [steps]);
+  }, [allSteps]);
 
   // Determine if there is an active pending approval request (and extract context)
+  // Strictly applies to CLI tool execution ('run_command'), never conversational text
   const pendingApproval = useMemo<{
-    type: 'TOOL' | 'PROPOSAL';
+    type: 'TOOL';
     stepIndex: number;
     toolName?: string;
     commandLine?: string;
     targetFile?: string;
-    proposalText?: string;
   } | null>(() => {
     // 1. Explicit tool confirmation takes precedence
     if (activeConfirmation) {
@@ -198,8 +267,8 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     }
 
     // 2. Check if the latest step in conversation is an uncompleted tool call (waiting for permission in terminal!)
-    if (steps.length > 0) {
-      const lastStep = steps[steps.length - 1];
+    if (allSteps.length > 0) {
+      const lastStep = allSteps[allSteps.length - 1];
       if (
         !dismissedSteps.has(lastStep.stepIndex) &&
         lastStep.source !== 'USER_EXPLICIT' &&
@@ -220,61 +289,11 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             targetFile: undefined,
           };
         }
-        return null;
       }
     }
 
-    // 3. Check if the latest step in conversation is asking for approval / permission in text
-    if (steps.length === 0) return null;
-    const lastStep = steps[steps.length - 1];
-
-    // Must strictly be an assistant response (MODEL + PLANNER_RESPONSE) without tool calls
-    // Never match GENERIC (tool output) or SYSTEM_MESSAGE
-    if (
-      lastStep.source !== 'MODEL' ||
-      lastStep.type !== 'PLANNER_RESPONSE' ||
-      (lastStep.toolCalls && lastStep.toolCalls.length > 0)
-    ) {
-      return null;
-    }
-
-    // If already approved or dismissed, don't show
-    if (dismissedSteps.has(lastStep.stepIndex)) {
-      return null;
-    }
-
-    // Must be an assistant message with substantive text
-    const content = lastStep.content || '';
-    if (!content.trim()) return null;
-
-    // Check if Luna is asking for approval / confirmation / permission
-    const approvalRegex = /\b(would you like|shall I|should I|do you want me to|do you want to proceed|please confirm|proceed with|approve|permission to|confirm these changes|review and commit)\b/i;
-
-    if (!approvalRegex.test(content)) {
-      return null;
-    }
-
-    // Extract the specific question / proposal sentence
-    const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
-    let proposalSentence = '';
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].replace(/^[#*>\-\s]+/, '').trim();
-      if (approvalRegex.test(line) || (line.endsWith('?') && i === lines.length - 1)) {
-        proposalSentence = line;
-        break;
-      }
-    }
-
-    if (!proposalSentence) {
-      proposalSentence = lines[lines.length - 1] || 'Approval requested by Luna.';
-    }
-
-    return {
-      type: 'PROPOSAL',
-      stepIndex: lastStep.stepIndex,
-      proposalText: proposalSentence,
-    };
-  }, [activeConfirmation, steps, dismissedSteps]);
+    return null;
+  }, [activeConfirmation, allSteps, dismissedSteps]);
 
   // Toggle all steps expanded / collapsed (Ctrl+O parity)
   const toggleAllSteps = useCallback(() => {
@@ -301,6 +320,57 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleAllSteps]);
 
+  // Keyboard shortcuts for Interactive Permission / Approval Card (1, 2, 3, 4, Enter, Esc)
+  useEffect(() => {
+    if (!pendingApproval) return;
+
+    const handleApprovalKey = (e: KeyboardEvent) => {
+      // Don't intercept if user is typing in chat input or another form field
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+
+      const stepIdx = pendingApproval.stepIndex;
+
+      if (pendingApproval.type === 'TOOL') {
+        const rawCmd = pendingApproval.commandLine;
+        if (e.key === '1' || e.key === 'Enter') {
+          e.preventDefault();
+          onConfirmTool(stepIdx, true, 1, rawCmd);
+          setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+          setActionFeedback('Option 1 selected: Running command [Enter] ✓');
+          setTimeout(() => setActionFeedback(null), 3000);
+        } else if (e.key === '2') {
+          e.preventDefault();
+          onConfirmTool(stepIdx, true, 2, rawCmd);
+          setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+          const cmd = (rawCmd || 'command').replace(/^["']|["']$/g, '').trim();
+          const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
+          setActionFeedback(`Option 2 selected: Allowed '${prefix}' in conversation [2] ✓`);
+          setTimeout(() => setActionFeedback(null), 3000);
+        } else if (e.key === '3') {
+          e.preventDefault();
+          onConfirmTool(stepIdx, true, 3, rawCmd);
+          setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+          const cmd = (rawCmd || 'command').replace(/^["']|["']$/g, '').trim();
+          const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
+          setActionFeedback(`Option 3 selected: Persisted '${prefix}' to settings.json [3] ✓`);
+          setTimeout(() => setActionFeedback(null), 3000);
+        } else if (e.key === '4' || e.key === 'Escape') {
+          e.preventDefault();
+          onConfirmTool(stepIdx, false, 4, rawCmd);
+          setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+          setActionFeedback('Option 4 selected: Cancelled command [Esc] ✗');
+          setTimeout(() => setActionFeedback(null), 3000);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleApprovalKey);
+    return () => window.removeEventListener('keydown', handleApprovalKey);
+  }, [pendingApproval, onConfirmTool]);
+
   // Auto-scroll on new steps
   useEffect(() => {
     if (isAutoScrollRef.current && scrollContainerRef.current) {
@@ -309,7 +379,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
         behavior: 'smooth',
       });
     }
-  }, [steps, activeConfirmation]);
+  }, [allSteps, activeConfirmation]);
 
   const handleScroll = () => {
     if (!scrollContainerRef.current) return;
@@ -319,11 +389,24 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputPrompt.trim()) return;
+    const promptText = inputPrompt.trim();
+    if (!promptText) return;
     if (pendingApproval) {
       setDismissedSteps((prev) => new Set(prev).add(pendingApproval.stepIndex));
     }
-    onSendPrompt(inputPrompt.trim());
+
+    // Optimistic UI prompt bubble: immediate display without waiting for network round-trip
+    const optimisticStep: AgentStep = {
+      stepIndex: Date.now(),
+      source: 'USER_EXPLICIT',
+      type: 'USER_INPUT',
+      status: 'DONE',
+      createdAt: new Date().toISOString(),
+      content: promptText,
+    };
+    setOptimisticSteps((prev) => [...prev, optimisticStep]);
+
+    onSendPrompt(promptText);
     setInputPrompt('');
     setShowSlashMenu(false);
     isAutoScrollRef.current = true;
@@ -423,7 +506,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 font-mono text-xs overscroll-contain"
       >
-        {steps.length === 0 && (
+        {allSteps.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-palenight-muted space-y-2 p-6 text-center select-none">
             <Bot className="w-8 h-8 text-palenight-border" />
             <p className="text-palenight-fg font-medium">Waiting for active agent session...</p>
@@ -433,7 +516,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
           </div>
         )}
 
-        {steps.map((step) => {
+        {allSteps.map((step) => {
           const isUser = step.source === 'USER_EXPLICIT' || step.type === 'USER_INPUT';
           const isFinalSummary = finalSummaryStepIndices.has(step.stepIndex);
           const hasThought = Boolean(step.thinking);
@@ -455,7 +538,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
                 <div className="flex items-center justify-between mb-1.5 pb-1 border-b border-palenight-border/40 text-[10px]">
                   <div className="flex items-center space-x-1.5">
                     <User className="w-3.5 h-3.5 text-palenight-blue" />
-                    <span className="text-palenight-blue font-bold">USER</span>
+                    <span className="text-palenight-blue font-bold">{userName.toUpperCase()}</span>
                     <span className="text-palenight-muted font-mono">#{step.stepIndex}</span>
                   </div>
                   <span className="text-palenight-muted font-mono">
@@ -471,23 +554,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
 
           // 2. MINIMIZED INTERMEDIATE MODEL STEP
           if (!isFinalSummary && !isStepExpanded) {
-            const isToolOutput = step.type === 'GENERIC';
-            const isSystem = step.type === 'SYSTEM_MESSAGE';
-            const toolCount = step.toolCalls?.length || 0;
-
-            let label = 'Execution step';
-            if (toolCount > 0) {
-              const toolNames = step.toolCalls?.map((t) => t.name).join(', ');
-              label = `${toolCount} tool${toolCount > 1 ? 's' : ''}: ${toolNames}`;
-            } else if (isToolOutput) {
-              label = 'Tool output log';
-            } else if (isSystem) {
-              label = 'System notification event';
-            } else if (step.thinking) {
-              label = 'Luna internal reasoning';
-            } else if (step.content) {
-              label = step.content.slice(0, 48).replace(/\n/g, ' ') + '...';
-            }
+            const label = formatStepSummary(step);
 
             return (
               <div
@@ -524,7 +591,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
                 <div className="flex items-center space-x-1.5">
                   <Bot className="w-3.5 h-3.5 text-palenight-mauve" />
                   <span className="text-palenight-mauve font-bold">
-                    {isFinalSummary ? 'LUNA (SUMMARY)' : 'LUNA (STEP)'}
+                    {isFinalSummary ? `${assistantName.toUpperCase()} (SUMMARY)` : `${assistantName.toUpperCase()} (STEP)`}
                   </span>
                   <span className="text-palenight-muted font-mono">#{step.stepIndex}</span>
                 </div>
@@ -626,9 +693,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2 text-palenight-bright font-bold text-xs font-mono">
                 <ShieldCheck className="w-4 h-4 text-palenight-mauve" />
-                <span>
-                  {pendingApproval.type === 'TOOL' ? 'Tool Execution Permission' : 'Action Approval Required'}
-                </span>
+                <span>Tool Execution Permission</span>
               </div>
               <div className="flex items-center space-x-2">
                 <span className="text-[10px] text-palenight-yellow font-mono font-bold bg-palenight-dark px-2.5 py-0.5 rounded border border-palenight-border animate-pulse">
@@ -645,165 +710,119 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
             </div>
 
             {/* Tool / Command Permission Request matching Antigravity CLI */}
-            {pendingApproval.type === 'TOOL' ? (
-              <div className="space-y-3">
-                <div className="bg-palenight-dark/95 rounded p-3 border border-palenight-border/60 text-xs font-mono space-y-1.5">
-                  <div className="text-[10px] text-palenight-muted">Requesting permission for:</div>
-                  <pre className="text-palenight-cyan bg-palenight-bg p-2 rounded overflow-x-auto text-[11px] font-bold border border-palenight-border/40 select-text leading-relaxed">
-                    {pendingApproval.commandLine || pendingApproval.targetFile || pendingApproval.toolName}
-                  </pre>
-                </div>
-
-                <div className="text-xs text-palenight-bright font-mono font-bold">
-                  Run this command?
-                </div>
-
-                {/* 4 Interactive Choice Buttons matching CLI numbered menu */}
-                <div className="space-y-1.5 pt-0.5">
-                  {/* Option 1: Yes, run command */}
-                  <button
-                    onClick={() => {
-                      const stepIdx = pendingApproval.stepIndex;
-                      onConfirmTool(stepIdx, true, 1);
-                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                      setActionFeedback('Option 1 selected: Running command ✓');
-                      setTimeout(() => setActionFeedback(null), 3000);
-                    }}
-                    className="w-full text-left bg-palenight-green/10 hover:bg-palenight-green/20 border border-palenight-green/40 hover:border-palenight-green text-palenight-bright p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center space-x-2 text-xs font-mono">
-                      <span className="font-bold text-palenight-green text-sm">1.</span>
-                      <span className="font-semibold text-palenight-bright group-hover:text-palenight-green">
-                        Yes, run command
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-palenight-muted group-hover:text-palenight-bright font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
-                      [Enter]
-                    </span>
-                  </button>
-
-                  {/* Option 2: Yes, and always allow in this conversation */}
-                  <button
-                    onClick={() => {
-                      const stepIdx = pendingApproval.stepIndex;
-                      onConfirmTool(stepIdx, true, 2);
-                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                      const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
-                      const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
-                      setActionFeedback(`Option 2 selected: Allowed '${prefix}' in conversation ✓`);
-                      setTimeout(() => setActionFeedback(null), 3000);
-                    }}
-                    className="w-full text-left bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 hover:border-palenight-mauve text-palenight-fg p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center space-x-2 text-xs font-mono">
-                      <span className="font-bold text-palenight-mauve text-sm">2.</span>
-                      <span className="text-[11px] group-hover:text-palenight-bright">
-                        Yes, and always allow in this conversation for commands that start with &apos;{(() => {
-                          const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
-                          return cmd.split(/\s+/).slice(0, 2).join(' ');
-                        })()}&apos;
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
-                      [2]
-                    </span>
-                  </button>
-
-                  {/* Option 3: Yes, and always allow (Persist to settings.json) */}
-                  <button
-                    onClick={() => {
-                      const stepIdx = pendingApproval.stepIndex;
-                      onConfirmTool(stepIdx, true, 3);
-                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                      const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
-                      const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
-                      setActionFeedback(`Option 3 selected: Persisted '${prefix}' to settings.json ✓`);
-                      setTimeout(() => setActionFeedback(null), 3000);
-                    }}
-                    className="w-full text-left bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 hover:border-palenight-cyan text-palenight-fg p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center space-x-2 text-xs font-mono">
-                      <span className="font-bold text-palenight-cyan text-sm">3.</span>
-                      <span className="text-[11px] group-hover:text-palenight-bright">
-                        Yes, and always allow for commands that start with &apos;{(() => {
-                          const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
-                          return cmd.split(/\s+/).slice(0, 2).join(' ');
-                        })()}&apos; (Persist to settings.json)
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
-                      [3]
-                    </span>
-                  </button>
-
-                  {/* Option 4: No, cancel */}
-                  <button
-                    onClick={() => {
-                      const stepIdx = pendingApproval.stepIndex;
-                      onConfirmTool(stepIdx, false, 4);
-                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                      setActionFeedback('Option 4 selected: Cancelled command ✗');
-                      setTimeout(() => setActionFeedback(null), 3000);
-                    }}
-                    className="w-full text-left bg-palenight-red/10 hover:bg-palenight-red/20 border border-palenight-red/40 hover:border-palenight-red text-palenight-bright p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center space-x-2 text-xs font-mono">
-                      <span className="font-bold text-palenight-red text-sm">4.</span>
-                      <span className="font-semibold text-palenight-red">
-                        No, cancel
-                      </span>
-                    </div>
-                    <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
-                      [4]
-                    </span>
-                  </button>
-                </div>
+            <div className="space-y-3">
+              <div className="bg-palenight-dark/95 rounded p-3 border border-palenight-border/60 text-xs font-mono space-y-1.5">
+                <div className="text-[10px] text-palenight-muted">Requesting permission for:</div>
+                <pre className="text-palenight-cyan bg-palenight-bg p-2 rounded overflow-x-auto text-[11px] font-bold border border-palenight-border/40 select-text leading-relaxed">
+                  {pendingApproval.commandLine || pendingApproval.targetFile || pendingApproval.toolName}
+                </pre>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="bg-palenight-dark/90 rounded p-3 border border-palenight-mauve/30 text-xs font-mono space-y-1.5">
-                  <div className="text-[10px] text-palenight-mauve font-bold uppercase tracking-wider">
-                    Luna is requesting your approval for:
-                  </div>
-                  <div className="text-palenight-bright text-[11px] leading-relaxed bg-palenight-card/80 p-2 rounded border border-palenight-border/50">
-                    {pendingApproval.proposalText}
-                  </div>
-                </div>
 
-                {/* Primary Action Buttons for Text Decision */}
-                <div className="flex space-x-2.5 pt-0.5">
-                  <button
-                    onClick={() => {
-                      const stepIdx = pendingApproval.stepIndex;
-                      onSendPrompt('yes');
-                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                      setActionFeedback('Dispatched approval to Luna (yes) ✓');
-                      setTimeout(() => setActionFeedback(null), 3000);
-                    }}
-                    className="flex-1 bg-palenight-green text-palenight-dark font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
-                    title="Accept and proceed"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>Accept & Proceed</span>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      const stepIdx = pendingApproval.stepIndex;
-                      onSendPrompt('no');
-                      setDismissedSteps((prev) => new Set(prev).add(stepIdx));
-                      setActionFeedback('Dispatched decline to Luna (no) ✗');
-                      setTimeout(() => setActionFeedback(null), 3000);
-                    }}
-                    className="flex-1 bg-palenight-red text-palenight-bright font-bold py-2.5 px-3 rounded-md flex items-center justify-center space-x-1.5 active:scale-98 transition-transform font-mono text-xs touch-manipulation cursor-pointer shadow-md hover:brightness-105"
-                    title="Decline action"
-                  >
-                    <X className="w-4 h-4" />
-                    <span>Decline</span>
-                  </button>
-                </div>
+              <div className="text-xs text-palenight-bright font-mono font-bold">
+                Run this command?
               </div>
-            )}
+
+              {/* 4 Interactive Choice Buttons matching CLI numbered menu */}
+              <div className="space-y-1.5 pt-0.5">
+                {/* Option 1: Yes, run command */}
+                <button
+                  onClick={() => {
+                    const stepIdx = pendingApproval.stepIndex;
+                    onConfirmTool(stepIdx, true, 1, pendingApproval.commandLine);
+                    setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                    setActionFeedback('Option 1 selected: Running command ✓');
+                    setTimeout(() => setActionFeedback(null), 3000);
+                  }}
+                  className="w-full text-left bg-palenight-green/10 hover:bg-palenight-green/20 border border-palenight-green/40 hover:border-palenight-green text-palenight-bright p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center space-x-2 text-xs font-mono">
+                    <span className="font-bold text-palenight-green text-sm">1.</span>
+                    <span className="font-semibold text-palenight-bright group-hover:text-palenight-green">
+                      Yes, run command
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-palenight-muted group-hover:text-palenight-bright font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                    [Enter]
+                  </span>
+                </button>
+
+                {/* Option 2: Yes, and always allow in this conversation */}
+                <button
+                  onClick={() => {
+                    const stepIdx = pendingApproval.stepIndex;
+                    onConfirmTool(stepIdx, true, 2, pendingApproval.commandLine);
+                    setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                    const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                    const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
+                    setActionFeedback(`Option 2 selected: Allowed '${prefix}' in conversation ✓`);
+                    setTimeout(() => setActionFeedback(null), 3000);
+                  }}
+                  className="w-full text-left bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 hover:border-palenight-mauve text-palenight-fg p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center space-x-2 text-xs font-mono">
+                    <span className="font-bold text-palenight-mauve text-sm">2.</span>
+                    <span className="text-[11px] group-hover:text-palenight-bright">
+                      Yes, and always allow in this conversation for commands that start with &apos;{(() => {
+                        const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                        return cmd.split(/\s+/).slice(0, 2).join(' ');
+                      })()}&apos;
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                    [2]
+                  </span>
+                </button>
+
+                {/* Option 3: Yes, and always allow (Persist to settings.json) */}
+                <button
+                  onClick={() => {
+                    const stepIdx = pendingApproval.stepIndex;
+                    onConfirmTool(stepIdx, true, 3, pendingApproval.commandLine);
+                    setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                    const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                    const prefix = cmd.split(/\s+/).slice(0, 2).join(' ');
+                    setActionFeedback(`Option 3 selected: Persisted '${prefix}' to settings.json ✓`);
+                    setTimeout(() => setActionFeedback(null), 3000);
+                  }}
+                  className="w-full text-left bg-palenight-dark hover:bg-palenight-card border border-palenight-border/60 hover:border-palenight-cyan text-palenight-fg p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center space-x-2 text-xs font-mono">
+                    <span className="font-bold text-palenight-cyan text-sm">3.</span>
+                    <span className="text-[11px] group-hover:text-palenight-bright">
+                      Yes, and always allow for commands that start with &apos;{(() => {
+                        const cmd = (pendingApproval.commandLine || 'command').replace(/^["']|["']$/g, '').trim();
+                        return cmd.split(/\s+/).slice(0, 2).join(' ');
+                      })()}&apos; (Persist to settings.json)
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                    [3]
+                  </span>
+                </button>
+
+                {/* Option 4: No, cancel */}
+                <button
+                  onClick={() => {
+                    const stepIdx = pendingApproval.stepIndex;
+                    onConfirmTool(stepIdx, false, 4, pendingApproval.commandLine);
+                    setDismissedSteps((prev) => new Set(prev).add(stepIdx));
+                    setActionFeedback('Option 4 selected: Cancelled command ✗');
+                    setTimeout(() => setActionFeedback(null), 3000);
+                  }}
+                  className="w-full text-left bg-palenight-red/10 hover:bg-palenight-red/20 border border-palenight-red/40 hover:border-palenight-red text-palenight-bright p-2.5 rounded-md flex items-center justify-between transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center space-x-2 text-xs font-mono">
+                    <span className="font-bold text-palenight-red text-sm">4.</span>
+                    <span className="font-semibold text-palenight-red">
+                      No, cancel
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-palenight-muted font-mono bg-palenight-dark px-1.5 py-0.5 rounded border border-palenight-border/40">
+                    [4]
+                  </span>
+                </button>
+              </div>
+            </div>
 
             {/* Quick Action Steering Pills */}
             <div className="flex flex-wrap gap-1.5 pt-1 border-t border-palenight-border/40">

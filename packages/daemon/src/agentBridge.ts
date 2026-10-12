@@ -427,6 +427,21 @@ export class AgentBridge extends EventEmitter {
   private transformRawStep(raw: Record<string, unknown>): AgentStep | null {
     if (typeof raw.step_index !== 'number') return null;
 
+    // Detect messages dispatched via agy agentapi send-message (remote control typing)
+    if (raw.type === 'SYSTEM_MESSAGE' && typeof raw.content === 'string') {
+      const match = raw.content.match(/\[Message\][\s\S]*?content=([\s\S]*?)(?:\n<\/SYSTEM_MESSAGE>|$)/);
+      if (match && match[1]) {
+        return {
+          stepIndex: raw.step_index,
+          type: 'USER_INPUT',
+          source: 'USER_EXPLICIT',
+          status: 'DONE',
+          createdAt: (raw.created_at as string) || new Date().toISOString(),
+          content: match[1].trim(),
+        };
+      }
+    }
+
     const toolCalls: AgentToolCall[] = [];
     if (Array.isArray(raw.tool_calls)) {
       for (const t of raw.tool_calls) {

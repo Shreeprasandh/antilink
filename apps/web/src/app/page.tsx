@@ -11,12 +11,40 @@ import { Cockpit } from '@/components/Cockpit';
 import { ConversationsDrawer } from '@/components/ConversationsDrawer';
 import { AuxiliaryDrawer } from '@/components/AuxiliaryDrawer';
 import { ShortcutsModal } from '@/components/ShortcutsModal';
+import { SettingsModal } from '@/components/SettingsModal';
 
 export default function AntilinkApp() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('stream');
   const [isConversationsOpen, setIsConversationsOpen] = useState(false);
   const [isAuxiliaryOpen, setIsAuxiliaryOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const [userName, setUserName] = useState('Shreeprasandh');
+  const [assistantName, setAssistantName] = useState('Luna');
+  const [userEmail, setUserEmail] = useState('shreeprasandh@gmail.com');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storedUser = localStorage.getItem('antilink_user_name');
+      const storedAssistant = localStorage.getItem('antilink_assistant_name');
+      const storedEmail = localStorage.getItem('antilink_user_email');
+      if (storedUser) setUserName(storedUser);
+      if (storedAssistant) setAssistantName(storedAssistant);
+      if (storedEmail) setUserEmail(storedEmail);
+    }
+  }, []);
+
+  const handleSaveSettings = (settings: { userName: string; assistantName: string; userEmail: string }) => {
+    setUserName(settings.userName);
+    setAssistantName(settings.assistantName);
+    setUserEmail(settings.userEmail);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('antilink_user_name', settings.userName);
+      localStorage.setItem('antilink_assistant_name', settings.assistantName);
+      localStorage.setItem('antilink_user_email', settings.userEmail);
+    }
+  };
 
   const {
     status,
@@ -43,8 +71,6 @@ export default function AntilinkApp() {
     execCommand,
   } = useAntilink();
 
-  const userEmail = 'shreeprasandh@gmail.com';
-  const userName = 'Shreeprasandh';
   const gitRepo = 'Shreeprasandh/antilink';
   const gitBranch = 'main';
   const remoteControlUrl =
@@ -62,6 +88,7 @@ export default function AntilinkApp() {
         setIsConversationsOpen(false);
         setIsAuxiliaryOpen(false);
         setIsShortcutsOpen(false);
+        setIsSettingsOpen(false);
         return;
       }
 
@@ -115,6 +142,7 @@ export default function AntilinkApp() {
         onOpenAuxiliary={() => setIsAuxiliaryOpen(true)}
         onToggleCaffeinate={toggleCaffeinate}
         onOpenShortcuts={() => setIsShortcutsOpen(true)}
+        onOpenSettings={() => setIsSettingsOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -136,10 +164,14 @@ export default function AntilinkApp() {
               steps={steps}
               activeConfirmation={activeConfirmation}
               activeConversationTitle={activeConversationTitle}
+              remoteControlUrl={remoteControlUrl}
+              userName={userName}
+              assistantName={assistantName}
               onConfirmTool={confirmTool}
               onSendPrompt={sendPrompt}
               onExecCommand={execCommand}
               onOpenShortcuts={() => setIsShortcutsOpen(true)}
+              onOpenSettings={() => setIsSettingsOpen(true)}
             />
           )}
 
@@ -205,6 +237,16 @@ export default function AntilinkApp() {
       <ShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
+      />
+
+      {/* Identity & Preferences Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        userName={userName}
+        assistantName={assistantName}
+        userEmail={userEmail}
+        onSave={handleSaveSettings}
       />
     </div>
   );

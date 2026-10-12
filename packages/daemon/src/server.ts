@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import * as url from 'node:url';
 import * as crypto from 'node:crypto';
 import { exec } from 'node:child_process';
@@ -325,27 +326,12 @@ export class AntilinkDaemonServer {
         const prompt = msg.prompt.trim();
         if (!prompt) break;
 
-        // If shell command, execute directly
-        if (/^(git|npm|node|pnpm|cargo|curl)\b/.test(prompt)) {
-          exec(prompt, { cwd: process.cwd() }, (err, stdout, stderr) => {
-            this.sendTo(ws, {
-              type: 'COMMAND_OUTPUT',
-              output: stdout || stderr || (err ? err.message : 'Command executed successfully'),
-              exitCode: err ? (err.code || 1) : 0,
-            });
-          });
-          break;
-        }
-
-        // 1. Inject keystroke into VS Code terminal (key code 36 = Return)
-        this.injectKeystrokeToTerminal(prompt, true);
-
-        // 2. Dispatch via agy agentapi send-message
+        // Dispatch prompt to Luna via official agy agentapi
         this.dispatchAgentMessage(prompt, (err) => {
           this.sendTo(ws, {
             type: 'COMMAND_OUTPUT',
-            output: err ? `Injected to terminal: "${prompt}"` : `Delivered to Luna: "${prompt}"`,
-            exitCode: 0,
+            output: err ? `Error delivering prompt to Luna: ${err.message}` : `Delivered to Luna: "${prompt}"`,
+            exitCode: err ? 1 : 0,
           });
         });
         break;
@@ -363,7 +349,12 @@ export class AntilinkDaemonServer {
           choice = '1'; // Yes, run command
         }
 
-        // 1. Inject the option number + Return into the CLI terminal TTY
+        // If choice is 2 or 3, persist rule to settings.json
+        if (choice === '2' || choice === '3') {
+          this.persistAllowedCommand(payload.commandLine);
+        }
+
+        // 1. Inject the option number + Return into the CLI terminal
         this.injectKeystrokeToTerminal(choice, true);
 
         // 2. Broadcast confirmation feedback
@@ -377,26 +368,43 @@ export class AntilinkDaemonServer {
     }
   }
 
+  private persistAllowedCommand(cmd?: string): void {
+    if (!cmd) return;
+    try {
+      const clean = cmd.replace(/^["']|["']$/g, '').trim();
+      if (!clean) return;
+      const settingsPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
+      if (fs.existsSync(settingsPath)) {
+        const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        if (!data.permissions) data.permissions = {};
+        if (!Array.isArray(data.permissions.allow)) data.permissions.allow = [];
+
+        const tokens = clean.split(/\s+/);
+        const prefix = tokens.length > 2 ? tokens.slice(0, 3).join(' ') : clean;
+        const rule = `command(${prefix})`;
+
+        if (!data.permissions.allow.includes(rule)) {
+          data.permissions.allow.push(rule);
+          fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2), 'utf8');
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   private injectKeystrokeToTerminal(text: string, hitReturn: boolean = true): void {
     try {
-      const scriptPath = path.resolve(__dirname, '../scripts/inject-tty.py');
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const newlineArg = hitReturn ? '1' : '0';
-
-      // 1. Primary: Direct TTY injection via TIOCSTI (requires zero accessibility permissions)
-      exec(`python3 "${scriptPath}" "${escaped}" ${newlineArg}`, (pyErr) => {
-        if (pyErr) {
-          // 2. Fallback: AppleScript keystroke
-          const returnClause = hitReturn
-            ? `-e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to key code 36'`
-            : '';
-          const script = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
-          exec(script, (err) => {
-            if (err) {
-              const fallback = `osascript -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
-              exec(fallback);
-            }
-          });
+      const returnClause = hitReturn
+        ? `-e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to key code 36'`
+        : '';
+      // Guaranteed terminal focus: Activates VS Code, focuses integrated Terminal via View menu, then keystrokes
+      const script = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to click menu item "Terminal" of menu 1 of menu bar item "View" of menu bar 1' -e 'delay 0.05' -e 'tell application "System Events" to tell process "Code" to keystroke "${escaped}"' ${returnClause}`;
+      exec(script, (err) => {
+        if (err) {
+          const fallback = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.05' -e 'tell application "System Events" to keystroke "${escaped}"' ${hitReturn ? "-e 'delay 0.05' -e 'tell application \"System Events\" to key code 36'" : ''}`;
+          exec(fallback);
         }
       });
     } catch {
