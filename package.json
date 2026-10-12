@@ -14,9 +14,10 @@
   "scripts": {
     "dev:daemon": "npm run --workspace=packages/daemon dev",
     "dev:web": "npm run --workspace=apps/web dev",
+    "build:shared": "npm run --workspace=packages/shared build",
     "build:web": "npm run --workspace=apps/web build",
     "build:daemon": "npm run --workspace=packages/daemon build",
-    "build": "npm run build:web && npm run build:daemon",
+    "build": "npm run build:shared && npm run build:web && npm run build:daemon",
     "start": "node ./bin/antilink.js"
   },
   "keywords": [

@@ -36,6 +36,15 @@ export function useAntilink() {
   const [tasks, setTasks] = useState<BackgroundTaskInfo[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([]);
 
+  // Gateway URL for Hosted Web PWA on Vercel
+  const [gatewayUrl, setGatewayUrl] = useState<string>('');
+
+  // Two-Tier Hardware & Master PIN Security States
+  const [isPairingRequired, setIsPairingRequired] = useState<boolean>(false);
+  const [pairingMessage, setPairingMessage] = useState<string>('');
+  const [isPinRequired, setIsPinRequired] = useState<boolean>(false);
+  const [pinError, setPinError] = useState<string | null>(null);
+
   const socketRef = useRef<WebSocket | null>(null);
   const pingStartRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -43,14 +52,88 @@ export function useAntilink() {
   const connect = useCallback(() => {
     if (typeof window === 'undefined') return;
 
-    const queryToken = new URLSearchParams(window.location.search).get('token');
+    const params = new URLSearchParams(window.location.search);
+    const queryGateway = params.get('gateway');
+    const queryToken = params.get('token');
+
+    if (queryGateway) {
+      localStorage.setItem('antilink_gateway_url', queryGateway);
+    }
     if (queryToken) {
       localStorage.setItem('antilink_token', queryToken);
     }
-    const token = queryToken || localStorage.getItem('antilink_token') || '';
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`;
+    let storedGateway = localStorage.getItem('antilink_gateway_url') || '';
+    let token = queryToken || localStorage.getItem('antilink_token') || '';
+
+    // If storedGateway is a full URL containing ?token=...
+    if (storedGateway.includes('?token=')) {
+      try {
+        const u = new URL(storedGateway);
+        const t = u.searchParams.get('token');
+        if (t && !token) {
+          token = t;
+          localStorage.setItem('antilink_token', t);
+        }
+        storedGateway = u.origin;
+        localStorage.setItem('antilink_gateway_url', storedGateway);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Determine target host and protocols
+    let targetHost = window.location.host;
+    let targetProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let targetHttpOrigin = window.location.origin;
+
+    if (storedGateway) {
+      try {
+        const parsed = new URL(storedGateway.startsWith('http') ? storedGateway : `https://${storedGateway}`);
+        targetHost = parsed.host;
+        targetProtocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+        targetHttpOrigin = parsed.origin;
+      } catch {
+        // ignore
+      }
+    } else {
+      // If no gateway is configured and running on Vercel
+      if (window.location.hostname.includes('vercel.app')) {
+        setStatus('disconnected');
+        return;
+      }
+    }
+
+    // Hardware Device Identity (Tier 1)
+    let deviceId = localStorage.getItem('antilink_device_id') || '';
+    if (!deviceId) {
+      deviceId =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : 'dev_' + Math.random().toString(36).substring(2, 12);
+      localStorage.setItem('antilink_device_id', deviceId);
+    }
+
+    let deviceName = 'Browser Client';
+    if (typeof navigator !== 'undefined') {
+      const ua = navigator.userAgent;
+      if (/iPhone|iPad|iPod/.test(ua)) deviceName = 'iPhone (Mobile Safari)';
+      else if (/Android/.test(ua)) deviceName = 'Android Mobile';
+      else if (/Macintosh/.test(ua)) deviceName = 'Mac Desktop';
+      else if (/Windows/.test(ua)) deviceName = 'Windows PC';
+      else if (/Linux/.test(ua)) deviceName = 'Linux Client';
+    }
+
+    // Master Security PIN (Tier 2)
+    const storedPin =
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('antilink_master_pin') : null) ||
+      localStorage.getItem('antilink_master_pin') ||
+      '';
+
+    setGatewayUrl(targetHttpOrigin);
+    const wsUrl = `${targetProtocol}//${targetHost}/ws?token=${token}&deviceId=${deviceId}&deviceName=${encodeURIComponent(
+      deviceName
+    )}&pin=${storedPin}`;
 
     setStatus('connecting');
 
@@ -61,7 +144,15 @@ export function useAntilink() {
       ws.onopen = () => {
         setStatus('connected');
         pingStartRef.current = performance.now();
-        ws.send(JSON.stringify({ type: 'GET_STATE' } satisfies AntilinkClientMessage));
+        ws.send(
+          JSON.stringify({
+            type: 'DEVICE_HANDSHAKE',
+            deviceId,
+            deviceName,
+            token,
+            pin: storedPin,
+          } satisfies AntilinkClientMessage)
+        );
       };
 
       ws.onmessage = (event) => {
@@ -69,7 +160,22 @@ export function useAntilink() {
           const msg = JSON.parse(event.data) as AntilinkServerMessage;
 
           switch (msg.type) {
+            case 'PAIR_CHALLENGE':
+              setIsPairingRequired(true);
+              setPairingMessage(msg.message);
+              setIsPinRequired(false);
+              break;
+
+            case 'PIN_REQUIRED':
+              setIsPairingRequired(false);
+              setIsPinRequired(true);
+              setPinError(msg.error || null);
+              break;
+
             case 'AUTH_SUCCESS':
+              setIsPairingRequired(false);
+              setIsPinRequired(false);
+              setPinError(null);
               setMachineName(msg.session.machineName);
               break;
 
@@ -89,6 +195,9 @@ export function useAntilink() {
               setArtifacts(msg.data.artifacts || []);
               setIsAgentWorking(Boolean(msg.data.isAgentWorking));
               setPromptQueue(msg.data.promptQueue || []);
+              if (msg.data.activeConfirmation !== undefined) {
+                setActiveConfirmation(msg.data.activeConfirmation);
+              }
               if (pingStartRef.current > 0) {
                 setLatencyMs(Math.round(performance.now() - pingStartRef.current));
               }
@@ -106,6 +215,12 @@ export function useAntilink() {
 
             case 'TOOL_CONFIRM_REQUEST':
               setActiveConfirmation(msg.payload);
+              playChime('permission');
+              triggerHaptic([120, 60, 120]);
+              break;
+
+            case 'TOOL_CONFIRM_RESOLVED':
+              setActiveConfirmation((prev) => (prev?.stepIdx === msg.stepIdx ? null : prev));
               break;
 
             case 'CONVERSATIONS_UPDATED':
@@ -148,6 +263,10 @@ export function useAntilink() {
 
             case 'AGENT_STATUS_CHANGED':
               setIsAgentWorking(msg.isWorking);
+              if (!msg.isWorking) {
+                playChime('completion');
+                triggerHaptic([60]);
+              }
               break;
 
             case 'COMMAND_OUTPUT':
@@ -260,6 +379,67 @@ export function useAntilink() {
     [sendMessage]
   );
 
+  const setGateway = useCallback(
+    (urlWithToken: string) => {
+      if (typeof window === 'undefined') return;
+      try {
+        const trimmed = urlWithToken.trim();
+        const withProto = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
+        const u = new URL(withProto);
+        const token = u.searchParams.get('token');
+        if (token) {
+          localStorage.setItem('antilink_token', token);
+        }
+        localStorage.setItem('antilink_gateway_url', u.origin);
+        setGatewayUrl(u.origin);
+        if (socketRef.current) {
+          socketRef.current.close();
+        }
+        setTimeout(() => {
+          connect();
+        }, 100);
+      } catch {
+        // ignore
+      }
+    },
+    [connect]
+  );
+
+  const submitPairingCode = useCallback(
+    (code: string) => {
+      const devId = typeof window !== 'undefined' ? localStorage.getItem('antilink_device_id') || '' : '';
+      sendMessage({
+        type: 'PAIR_VERIFY',
+        deviceId: devId,
+        code,
+      });
+    },
+    [sendMessage]
+  );
+
+  const submitPin = useCallback(
+    (pin: string) => {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('antilink_master_pin', pin);
+        localStorage.setItem('antilink_master_pin', pin);
+      }
+      sendMessage({
+        type: 'PIN_VERIFY',
+        pin,
+      });
+    },
+    [sendMessage]
+  );
+
+  const disconnect = useCallback(() => {
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
+    setStatus('disconnected');
+    setIsPairingRequired(false);
+    setIsPinRequired(false);
+  }, []);
+
   return {
     status,
     latencyMs,
@@ -278,6 +458,15 @@ export function useAntilink() {
     subagents,
     tasks,
     artifacts,
+    gatewayUrl,
+    isPairingRequired,
+    pairingMessage,
+    isPinRequired,
+    pinError,
+    submitPairingCode,
+    submitPin,
+    disconnect,
+    setGateway,
     sendPrompt,
     cancelQueuedPrompt,
     confirmTool,
@@ -287,4 +476,57 @@ export function useAntilink() {
     scanPorts,
     execCommand,
   };
+}
+
+function playChime(type: 'permission' | 'completion') {
+  if (typeof window === 'undefined') return;
+  try {
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    const now = ctx.currentTime;
+
+    if (type === 'permission') {
+      // Two-tone alert chime: 520Hz then 660Hz
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(520, now);
+      osc.frequency.setValueAtTime(660, now + 0.12);
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.36);
+    } else {
+      // Gentle ascending task completion chime: 440Hz -> 554Hz -> 659Hz
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.setValueAtTime(554.37, now + 0.1);
+      osc.frequency.setValueAtTime(659.25, now + 0.2);
+      gain.gain.setValueAtTime(0.09, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.46);
+    }
+  } catch {
+    // AudioContext blocked until user interaction, ignore gracefully
+  }
+}
+
+function triggerHaptic(pattern: number[] = [80]) {
+  if (typeof window !== 'undefined' && 'navigator' in window && navigator.vibrate) {
+    try {
+      navigator.vibrate(pattern);
+    } catch {
+      // ignore
+    }
+  }
 }

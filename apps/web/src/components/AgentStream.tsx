@@ -20,6 +20,11 @@ import {
   ExternalLink,
   Settings,
   Clock,
+  Paperclip,
+  Mic,
+  MicOff,
+  ChevronUp,
+  Loader2,
 } from 'lucide-react';
 import type { AgentStep, ToolConfirmationPayload, QueuedPrompt } from '@antilink/shared';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -77,6 +82,8 @@ function formatStepSummary(step: AgentStep): string {
 }
 
 interface AgentStreamProps {
+  isActive?: boolean;
+  gatewayUrl?: string;
   steps: AgentStep[];
   activeConfirmation: ToolConfirmationPayload | null;
   activeConversationTitle?: string;
@@ -94,6 +101,8 @@ interface AgentStreamProps {
 }
 
 export const AgentStream: React.FC<AgentStreamProps> = ({
+  isActive = true,
+  gatewayUrl,
   steps,
   activeConfirmation,
   activeConversationTitle,
@@ -119,11 +128,17 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   const [selectedSlashIndex, setSelectedSlashIndex] = useState<number>(0);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [dismissedSteps, setDismissedSteps] = useState<Set<number>>(new Set());
+  const [isExpandedInput, setIsExpandedInput] = useState<boolean>(false);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = useRef<number>(0);
   const isAutoScrollRef = useRef<boolean>(true);
   const initialScrollDoneRef = useRef<boolean>(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<any>(null);
 
   // Merge steps with optimistic user prompts
   const allSteps = useMemo(() => {
@@ -379,6 +394,14 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     return () => window.removeEventListener('keydown', handleApprovalKey);
   }, [pendingApproval, onConfirmTool]);
 
+  // Scroll position preservation on tab switch: restore instantly without smooth animation
+  useEffect(() => {
+    if (isActive && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop =
+        lastScrollTopRef.current > 0 ? lastScrollTopRef.current : scrollContainerRef.current.scrollHeight;
+    }
+  }, [isActive]);
+
   // Reset initial scroll flag when switching conversation title
   useEffect(() => {
     initialScrollDoneRef.current = false;
@@ -409,11 +432,24 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
   const handleScroll = () => {
     if (!scrollContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    if (scrollTop > 0) {
+      lastScrollTopRef.current = scrollTop;
+    }
     isAutoScrollRef.current = scrollHeight - scrollTop - clientHeight < 100;
   };
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Auto-resize textarea to fit content up to max-height
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      const maxHeight = isExpandedInput ? 240 : 120;
+      const nextHeight = Math.min(textareaRef.current.scrollHeight, maxHeight);
+      textareaRef.current.style.height = `${Math.max(38, nextHeight)}px`;
+    }
+  }, [inputPrompt, isExpandedInput]);
+
+  const handleSend = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     const promptText = inputPrompt.trim();
     if (!promptText) return;
     if (pendingApproval) {
@@ -456,7 +492,7 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     setTimeout(() => setCopiedIndex(null), 1500);
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setInputPrompt(val);
     if (val.startsWith('/')) {
@@ -467,10 +503,142 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSlashMenu && filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSlashIndex((prev) => (prev + 1) % filteredCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSlashIndex((prev) => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(filteredCommands[selectedSlashIndex].cmd);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSlashMenu(false);
+        return;
+      }
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    setActionFeedback(`Uploading ${file.name}...`);
+
+    try {
+      const token = localStorage.getItem('antilink_token') || '';
+      const apiBase = gatewayUrl ? gatewayUrl : '';
+      const res = await fetch(`${apiBase}/api/upload?token=${token}&filename=${encodeURIComponent(file.name)}`, {
+        method: 'POST',
+        body: file,
+      });
+      const data = await res.json();
+      if (data.success && data.filePath) {
+        setInputPrompt((prev) => {
+          const spacer = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+          return `${prev}${spacer}[Attached file: ${data.filePath}]`;
+        });
+        setActionFeedback(`Uploaded: ${file.name}`);
+      } else {
+        setActionFeedback(`Upload failed: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err: unknown) {
+      setActionFeedback(`Upload failed: ${(err as Error).message}`);
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      setTimeout(() => setActionFeedback(null), 3000);
+    }
+  };
+
+  const toggleVoiceRecording = () => {
+    if (typeof window === 'undefined') return;
+
+    const SpeechRecognition =
+      (window as unknown as { SpeechRecognition?: any }).SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: any }).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setActionFeedback('Speech recognition not supported in this browser');
+      setTimeout(() => setActionFeedback(null), 2500);
+      return;
+    }
+
+    if (isRecording) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
+      setIsRecording(false);
+      setActionFeedback('Voice recording stopped');
+      setTimeout(() => setActionFeedback(null), 1500);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        setIsRecording(true);
+        setActionFeedback('Listening... Speak now');
+      };
+
+      recognition.onresult = (event: any) => {
+        let final = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            final += event.results[i][0].transcript;
+          }
+        }
+        if (final) {
+          setInputPrompt((prev) => {
+            const spacer = prev && !prev.endsWith(' ') && !prev.endsWith('\n') ? ' ' : '';
+            return `${prev}${spacer}${final.trim()}`;
+          });
+        }
+      };
+
+      recognition.onerror = () => {
+        setIsRecording(false);
+        recognitionRef.current = null;
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+        recognitionRef.current = null;
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch {
+      setIsRecording(false);
+      setActionFeedback('Microphone permission denied');
+      setTimeout(() => setActionFeedback(null), 2500);
+    }
+  };
+
   const selectCommand = (cmd: string) => {
     setInputPrompt(cmd + ' ');
     setShowSlashMenu(false);
-    inputRef.current?.focus();
+    textareaRef.current?.focus();
   };
 
   // Quick chips featuring custom protocols
@@ -507,25 +675,6 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
         </span>
 
         <div className="flex items-center space-x-2 text-[10px]">
-          {/* Ctrl+O Tools Toggle Button */}
-          <button
-            onClick={toggleAllSteps}
-            className="flex items-center space-x-1 text-palenight-muted hover:text-palenight-bright bg-palenight-card border border-palenight-border px-1.5 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
-            title="Press Ctrl+O to expand or collapse all intermediate steps"
-          >
-            {allExpanded ? (
-              <>
-                <Minimize2 className="w-3 h-3 text-palenight-mauve" />
-                <span className="hidden sm:inline">Ctrl+O Minimize</span>
-              </>
-            ) : (
-              <>
-                <Maximize2 className="w-3 h-3 text-palenight-mauve" />
-                <span className="hidden sm:inline">Ctrl+O Expand All</span>
-              </>
-            )}
-          </button>
-
           {/* Shortcuts Help Button */}
           {onOpenShortcuts && (
             <button
@@ -1027,20 +1176,77 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
       {/* Prompt Input Form */}
       <form
         onSubmit={handleSend}
-        className="p-2.5 bg-palenight-dark border-t border-palenight-border shrink-0 flex items-center space-x-2"
+        className="p-2.5 bg-palenight-dark border-t border-palenight-border shrink-0 flex items-end space-x-2 relative"
       >
+        {/* Hidden File Input */}
         <input
-          ref={inputRef}
-          type="text"
-          value={inputPrompt}
-          onChange={handleInputChange}
-          placeholder={
-            isAgentWorking
-              ? "Luna is working... Type to queue a message"
-              : "Type a message or / for commands..."
-          }
-          className="flex-1 bg-palenight-bg border border-palenight-border text-palenight-bright px-3 py-2 rounded-md text-xs sm:text-xs focus:outline-none focus:border-palenight-mauve placeholder-palenight-muted font-mono transition-colors"
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleFileUpload}
         />
+
+        {/* File Upload Button (Paperclip) */}
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isUploading}
+          className="p-2 rounded-md text-palenight-muted hover:text-palenight-bright hover:bg-palenight-card border border-palenight-border active:scale-95 transition-all touch-manipulation shrink-0 cursor-pointer disabled:opacity-40"
+          title="Upload file or screenshot to workspace"
+        >
+          {isUploading ? (
+            <Loader2 className="w-4 h-4 animate-spin text-palenight-mauve" />
+          ) : (
+            <Paperclip className="w-4 h-4" />
+          )}
+        </button>
+
+        {/* Voice Dictation Button (Microphone) */}
+        <button
+          type="button"
+          onClick={toggleVoiceRecording}
+          className={`p-2 rounded-md border active:scale-95 transition-all touch-manipulation shrink-0 cursor-pointer ${
+            isRecording
+              ? 'bg-palenight-red/20 border-palenight-red text-palenight-red animate-pulse'
+              : 'text-palenight-muted hover:text-palenight-bright hover:bg-palenight-card border-palenight-border'
+          }`}
+          title={isRecording ? 'Stop voice recording' : 'Voice dictation (speech-to-text)'}
+        >
+          {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+        </button>
+
+        {/* Auto-expanding Multiline Textarea Container */}
+        <div className="flex-1 relative flex items-center">
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            value={inputPrompt}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            placeholder={
+              isAgentWorking
+                ? "Luna is working... Type to queue a message"
+                : "Type a message or / for commands..."
+            }
+            className="w-full bg-palenight-bg border border-palenight-border text-palenight-bright px-3 py-2 pr-8 rounded-md text-xs focus:outline-none focus:border-palenight-mauve placeholder-palenight-muted font-mono transition-all resize-none leading-relaxed overflow-y-auto"
+          />
+
+          {/* Expand/Collapse Long Message Toggle */}
+          <button
+            type="button"
+            onClick={() => setIsExpandedInput((prev) => !prev)}
+            className="absolute right-2 top-2.5 text-palenight-muted hover:text-palenight-fg p-0.5 cursor-pointer"
+            title={isExpandedInput ? "Collapse input" : "Expand input for long messages"}
+          >
+            {isExpandedInput ? (
+              <Minimize2 className="w-3.5 h-3.5 text-palenight-mauve" />
+            ) : (
+              <Maximize2 className="w-3.5 h-3.5" />
+            )}
+          </button>
+        </div>
+
+        {/* Send Button */}
         <button
           type="submit"
           disabled={!inputPrompt.trim()}

@@ -6,25 +6,33 @@ import type { DiscoveredPort } from '@antilink/shared';
 
 interface PreviewMatrixProps {
   ports: DiscoveredPort[];
+  gatewayUrl?: string;
   onScanPorts: () => void;
 }
 
-export const PreviewMatrix: React.FC<PreviewMatrixProps> = ({ ports, onScanPorts }) => {
+export const PreviewMatrix: React.FC<PreviewMatrixProps> = ({ ports, gatewayUrl, onScanPorts }) => {
   const [selectedPort, setSelectedPort] = useState<number | null>(null);
   const [viewportMode, setViewportMode] = useState<'responsive' | 'tablet' | 'mobile'>('responsive');
   const [iframeKey, setIframeKey] = useState<number>(0);
   const [copied, setCopied] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
     if (ports.length > 0 && (selectedPort === null || !ports.some((p) => p.port === selectedPort))) {
       setSelectedPort(ports[0].port);
+      setIsLoading(true);
     }
   }, [ports, selectedPort]);
 
   const activePort = ports.find((p) => p.port === selectedPort);
-  const previewUrl = selectedPort ? `/preview/${selectedPort}/` : '';
+  const previewUrl = selectedPort
+    ? gatewayUrl
+      ? `${gatewayUrl}/preview/${selectedPort}/`
+      : `/preview/${selectedPort}/`
+    : '';
 
   const handleReload = () => {
+    setIsLoading(true);
     setIframeKey((prev) => prev + 1);
   };
 
@@ -154,7 +162,7 @@ export const PreviewMatrix: React.FC<PreviewMatrixProps> = ({ ports, onScanPorts
       <div className="flex-1 bg-palenight-bg overflow-hidden flex items-center justify-center p-0">
         {selectedPort ? (
           <div
-            className={`h-full transition-all duration-200 bg-palenight-dark ${
+            className={`h-full transition-all duration-200 bg-palenight-dark relative ${
               viewportMode === 'mobile'
                 ? 'w-full max-w-[390px] border-x border-palenight-border shadow-2xl'
                 : viewportMode === 'tablet'
@@ -162,10 +170,17 @@ export const PreviewMatrix: React.FC<PreviewMatrixProps> = ({ ports, onScanPorts
                 : 'w-full'
             }`}
           >
+            {isLoading && (
+              <div className="absolute inset-0 bg-palenight-bg/90 flex flex-col items-center justify-center space-y-2 z-10 font-mono text-xs text-palenight-muted">
+                <RotateCw className="w-5 h-5 animate-spin text-palenight-mauve" />
+                <span>Connecting to Port {selectedPort}...</span>
+              </div>
+            )}
             <iframe
               key={iframeKey}
               src={previewUrl}
-              className="w-full h-full border-0 bg-palenight-dark"
+              onLoad={() => setIsLoading(false)}
+              className="w-full h-full border-0 bg-palenight-bg"
               title={`Live Preview Port ${selectedPort}`}
             />
           </div>

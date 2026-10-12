@@ -16,6 +16,9 @@ import type {
 export class AgentBridge extends EventEmitter {
   private brainDir: string;
   private dbPath: string;
+  private cliLogPath: string;
+  private lastCliLogBytes: number = 0;
+  private activeConfirmation: ToolConfirmationPayload | null = null;
   private activeConversationId: string | null = null;
   private transcriptPath: string | null = null;
   private lastReadBytes: number = 0;
@@ -28,15 +31,18 @@ export class AgentBridge extends EventEmitter {
     super();
     this.brainDir = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain');
     this.dbPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'conversation_summaries.db');
+    this.cliLogPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'cli.log');
   }
 
   public init(): void {
     this.discoverActiveConversation();
+    this.initCliLogState();
     this.wasWorking = this.isAgentWorking();
     this.pollInterval = setInterval(() => {
       this.checkAndReadTranscript();
+      this.checkCliLog();
       this.checkWorkingState();
-    }, 800);
+    }, 300);
   }
 
   public stop(): void {
@@ -50,6 +56,10 @@ export class AgentBridge extends EventEmitter {
     }
   }
 
+  public getActiveConfirmation(): ToolConfirmationPayload | null {
+    return this.activeConfirmation;
+  }
+
   public notifyAgentStarted(): void {
     this.wasWorking = true;
     this.emit('agent_status_changed', true);
@@ -57,6 +67,7 @@ export class AgentBridge extends EventEmitter {
   }
 
   public isAgentWorking(): boolean {
+    if (this.activeConfirmation) return true;
     if (!this.activeConversationId) return false;
 
     // 1. Authoritative SQLite database check (read-only, sub-millisecond)
@@ -496,6 +507,153 @@ export class AgentBridge extends EventEmitter {
     } catch {
       // ignore
     }
+  }
+
+  private initCliLogState(): void {
+    try {
+      if (!fs.existsSync(this.cliLogPath)) return;
+      const stat = fs.statSync(this.cliLogPath);
+      this.lastCliLogBytes = stat.size;
+
+      // Read last 16KB to check if there is an in-flight confirmation waiting for user approval
+      const start = Math.max(0, stat.size - 16384);
+      const fd = fs.openSync(this.cliLogPath, 'r');
+      const buffer = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+      fs.closeSync(fd);
+
+      const content = buffer.toString('utf-8');
+      const lines = content.split('\n');
+
+      let lastSurface: { toolName: string; stepIdx: number } | null = null;
+      let lastResponseStepIdx = -1;
+
+      for (const line of lines) {
+        const surfaceMatch = line.match(/Surfacing tool confirmation:\s*"([^"]+)"\s*at step\s*(\d+)/);
+        if (surfaceMatch) {
+          lastSurface = {
+            toolName: surfaceMatch[1],
+            stepIdx: parseInt(surfaceMatch[2], 10),
+          };
+        }
+        const respMatch = line.match(/Responding to tool confirmation:\s*convID=([^,]+),\s*stepIdx=(\d+)/);
+        if (respMatch) {
+          lastResponseStepIdx = parseInt(respMatch[2], 10);
+        }
+      }
+
+      if (lastSurface && lastSurface.stepIdx > lastResponseStepIdx) {
+        this.activeConfirmation = this.buildConfirmationPayload(lastSurface.toolName, lastSurface.stepIdx);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private checkCliLog(): void {
+    try {
+      if (!fs.existsSync(this.cliLogPath)) return;
+      const stat = fs.statSync(this.cliLogPath);
+      if (stat.size < this.lastCliLogBytes) {
+        this.lastCliLogBytes = 0;
+      }
+      if (stat.size === this.lastCliLogBytes) return;
+
+      const bytesToRead = stat.size - this.lastCliLogBytes;
+      const buffer = Buffer.alloc(bytesToRead);
+      const fd = fs.openSync(this.cliLogPath, 'r');
+      fs.readSync(fd, buffer, 0, bytesToRead, this.lastCliLogBytes);
+      fs.closeSync(fd);
+      this.lastCliLogBytes = stat.size;
+
+      const chunk = buffer.toString('utf-8');
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        const surfaceMatch = line.match(/Surfacing tool confirmation:\s*"([^"]+)"\s*at step\s*(\d+)/);
+        if (surfaceMatch) {
+          const toolName = surfaceMatch[1];
+          const stepIdx = parseInt(surfaceMatch[2], 10);
+          const payload = this.buildConfirmationPayload(toolName, stepIdx);
+          this.activeConfirmation = payload;
+          this.emit('tool_confirmation', payload);
+        }
+
+        const respMatch = line.match(/Responding to tool confirmation:\s*convID=([^,]+),\s*stepIdx=(\d+)/);
+        if (respMatch) {
+          const stepIdx = parseInt(respMatch[2], 10);
+          if (this.activeConfirmation && this.activeConfirmation.stepIdx === stepIdx) {
+            this.activeConfirmation = null;
+          }
+          this.emit('tool_confirmation_resolved', { stepIdx });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private buildConfirmationPayload(toolName: string, stepIdx: number): ToolConfirmationPayload {
+    let commandLine: string | undefined;
+    let targetFile: string | undefined;
+    let args: Record<string, unknown> = {};
+
+    // 1. Search recentSteps for stepIdx or stepIdx - 1
+    const candidateSteps = this.recentSteps.filter(
+      (s) => s.stepIndex === stepIdx || s.stepIndex === stepIdx - 1
+    );
+
+    for (const step of candidateSteps) {
+      if (step.toolCalls && step.toolCalls.length > 0) {
+        const tc = step.toolCalls[0];
+        if (tc.args) {
+          args = tc.args;
+          commandLine = (tc.args.CommandLine as string) || (tc.args.command as string) || undefined;
+          targetFile = (tc.args.TargetFile as string) || (tc.args.path as string) || undefined;
+        }
+        break;
+      }
+    }
+
+    // 2. Fallback to transcript file if not yet cached in recentSteps
+    if (!commandLine && !targetFile && this.transcriptPath && fs.existsSync(this.transcriptPath)) {
+      try {
+        const content = fs.readFileSync(this.transcriptPath, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          try {
+            const parsed = JSON.parse(line);
+            if (
+              (parsed.step_index === stepIdx || parsed.step_index === stepIdx - 1) &&
+              Array.isArray(parsed.tool_calls) &&
+              parsed.tool_calls.length > 0
+            ) {
+              const tc = parsed.tool_calls[0];
+              const tcArgs = (tc.arguments || tc.args || {}) as Record<string, unknown>;
+              args = tcArgs;
+              commandLine = (tcArgs.CommandLine as string) || (tcArgs.command as string) || undefined;
+              targetFile = (tcArgs.TargetFile as string) || (tcArgs.path as string) || undefined;
+              break;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return {
+      conversationId: this.activeConversationId || '',
+      stepIdx,
+      toolName,
+      commandLine,
+      targetFile,
+      args,
+    };
   }
 
   private transformRawStep(raw: Record<string, unknown>): AgentStep | null {

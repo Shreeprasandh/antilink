@@ -23,6 +23,7 @@ interface HeaderProps {
   telemetry: SystemTelemetry | null;
   userEmail?: string;
   remoteControlUrl?: string;
+  onOpenGatewayModal?: () => void;
   onOpenConversations?: () => void;
   onOpenAuxiliary?: () => void;
   onToggleCaffeinate?: (enable: boolean) => void;
@@ -39,6 +40,7 @@ export const Header: React.FC<HeaderProps> = ({
   telemetry,
   userEmail = 'shreeprasandh@gmail.com',
   remoteControlUrl = 'https://antigravity.google.com/r/fe05edc8-4845-4227-8a3a-6f6eb60335d4-v2?p=c%2Fd933eaf8-272e-4559-89bc-a9c284a5eed0%3Fsection%3Ddefault-cli-project',
+  onOpenGatewayModal,
   onOpenConversations,
   onOpenAuxiliary,
   onToggleCaffeinate,
@@ -92,8 +94,12 @@ export const Header: React.FC<HeaderProps> = ({
 
         <div className="h-3 w-[1px] bg-palenight-border mx-0.5 hidden xs:block" />
 
-        {/* Host Machine & Latency */}
-        <div className="flex items-center space-x-1.5">
+        {/* Host Machine & Latency (Clickable to switch or enter Gateway) */}
+        <button
+          onClick={onOpenGatewayModal}
+          className="flex items-center space-x-1.5 bg-palenight-card/80 hover:bg-palenight-card border border-palenight-border px-2 py-0.5 rounded cursor-pointer touch-manipulation transition-colors"
+          title="Click to view or switch Antilink Gateway connection"
+        >
           <span
             className={`w-2 h-2 rounded-full transition-colors ${
               isConnected
@@ -102,14 +108,14 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           />
           <span className="text-palenight-fg truncate max-w-[70px] sm:max-w-[110px] font-mono text-[11px] hidden xs:inline">
-            {machineName}
+            {isConnected ? machineName : 'Connect Mac'}
           </span>
           {isConnected && (
             <span className="text-palenight-muted text-[10px] hidden sm:inline font-mono">
               {latencyMs}ms
             </span>
           )}
-        </div>
+        </button>
       </div>
 
       {/* Right: Remote Control Link, Wake Lock, Battery & Auxiliary Drawer */}

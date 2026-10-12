@@ -103,6 +103,9 @@ export interface QueuedPrompt {
 
 export type AntilinkClientMessage =
   | { type: 'AUTH'; token: string }
+  | { type: 'DEVICE_HANDSHAKE'; deviceId: string; deviceName: string; token: string; pin?: string }
+  | { type: 'PAIR_VERIFY'; deviceId: string; code: string }
+  | { type: 'PIN_VERIFY'; pin: string }
   | { type: 'GET_STATE' }
   | { type: 'SWITCH_CONVERSATION'; conversationId: string }
   | { type: 'SEND_PROMPT'; prompt: string }
@@ -116,6 +119,9 @@ export type AntilinkClientMessage =
 export type AntilinkServerMessage =
   | { type: 'AUTH_SUCCESS'; session: { paired: boolean; machineName: string } }
   | { type: 'AUTH_FAILED'; error: string }
+  | { type: 'PAIR_CHALLENGE'; deviceId: string; deviceName: string; message: string }
+  | { type: 'PIN_REQUIRED'; error?: string }
+  | { type: 'SECURITY_ALERT'; message: string }
   | { type: 'INITIAL_STATE'; data: AntilinkInitialState }
   | { type: 'CONVERSATIONS_UPDATED'; conversations: ConversationSummary[] }
   | { type: 'SUBAGENTS_UPDATED'; subagents: SubagentInfo[] }
@@ -129,6 +135,7 @@ export type AntilinkServerMessage =
   | { type: 'TUNNEL_UPDATED'; tunnelUrl: string | null }
   | { type: 'PROMPT_QUEUE_UPDATED'; queue: QueuedPrompt[] }
   | { type: 'AGENT_STATUS_CHANGED'; isWorking: boolean }
+  | { type: 'TOOL_CONFIRM_RESOLVED'; stepIdx: number }
   | { type: 'COMMAND_OUTPUT'; output: string; exitCode?: number };
 
 export interface AntilinkInitialState {
@@ -146,4 +153,5 @@ export interface AntilinkInitialState {
   recentSteps: AgentStep[];
   isAgentWorking?: boolean;
   promptQueue?: QueuedPrompt[];
+  activeConfirmation?: ToolConfirmationPayload | null;
 }

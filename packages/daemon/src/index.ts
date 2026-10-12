@@ -50,10 +50,13 @@ export async function runDaemon(flags: Partial<CliFlags> = {}): Promise<void> {
       const publicUrl = await tunnel.start();
       if (publicUrl) {
         const fullPublicUrl = `${publicUrl}/?token=${token}`;
+        const vercelUrl = `https://antilink-gold.vercel.app/?gateway=${encodeURIComponent(publicUrl)}&token=${token}`;
         server.setTunnelUrl(publicUrl);
-        activeAccessUrl = fullPublicUrl;
+        activeAccessUrl = vercelUrl;
         console.log('\x1b[38;2;195;232;141m[OK]\x1b[0m Public HTTPS Tunnel Ready:');
         console.log('\x1b[38;2;137;221;255m\x1b[1m' + fullPublicUrl + '\x1b[0m\n');
+        console.log('\x1b[38;2;199;146;234m[PERMANENT WEB]\x1b[0m Vercel PWA App:');
+        console.log('\x1b[38;2;195;232;141m\x1b[1m' + vercelUrl + '\x1b[0m\n');
       } else {
         console.log('\x1b[38;2;255;203;107m[NOTE]\x1b[0m Cloudflare tunnel skipped or timed out. Use Wi-Fi URL.');
       }
@@ -72,13 +75,28 @@ export async function runDaemon(flags: Partial<CliFlags> = {}): Promise<void> {
     // fallback if terminal does not support QR rendering
   }
 
-  console.log('\n\x1b[38;2;103;110;149mPress Ctrl+C to disconnect and restore normal sleep.\x1b[0m\n');
-
   const cleanup = () => {
     console.log('\n\x1b[38;2;247;140;108m[SHUTDOWN]\x1b[0m Stopping daemon and releasing wake-locks...');
     server.stop();
     process.exit(0);
   };
+
+  if (process.stdin.isTTY) {
+    try {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (key: string) => {
+        if (key === '\u0003') {
+          cleanup();
+        } else if (key.toLowerCase() === 'y') {
+          server.security.approveLatestPending(true);
+        }
+      });
+    } catch {
+      // non-TTY environment fallback
+    }
+  }
 
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);

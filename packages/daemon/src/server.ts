@@ -18,6 +18,7 @@ import { PortScanner } from './portScanner.js';
 import { CaffeinateManager } from './caffeinate.js';
 import { TelemetryCollector } from './telemetry.js';
 import { AgentBridge } from './agentBridge.js';
+import { DeviceSecurityManager } from './security.js';
 
 export interface ServerOptions {
   port: number;
@@ -41,6 +42,7 @@ export class AntilinkDaemonServer {
   private caffeinate: CaffeinateManager;
   private telemetry: TelemetryCollector;
   private agentBridge: AgentBridge;
+  public security: DeviceSecurityManager;
 
   constructor(options: ServerOptions) {
     this.port = options.port;
@@ -53,6 +55,7 @@ export class AntilinkDaemonServer {
     this.caffeinate = new CaffeinateManager(true);
     this.telemetry = new TelemetryCollector();
     this.agentBridge = new AgentBridge();
+    this.security = new DeviceSecurityManager();
 
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -165,6 +168,57 @@ export class AntilinkDaemonServer {
       return;
     }
 
+    // Direct file upload to workspace uploads/ folder
+    if (pathname === '/api/upload' && req.method === 'POST') {
+      const reqToken = req.headers.authorization?.replace('Bearer ', '') || parsedUrl.query.token;
+      if (reqToken !== this.token) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const rawFilename = (parsedUrl.query.filename as string) || (req.headers['x-filename'] as string) || `upload_${Date.now()}`;
+      const safeFilename = path.basename(decodeURIComponent(rawFilename)).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const uploadDir = path.join(process.cwd(), 'uploads');
+
+      try {
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+
+        const targetPath = path.join(uploadDir, safeFilename);
+        const writeStream = fs.createWriteStream(targetPath);
+        let bytesReceived = 0;
+
+        req.on('data', (chunk) => {
+          bytesReceived += chunk.length;
+        });
+
+        req.pipe(writeStream);
+
+        writeStream.on('finish', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              success: true,
+              filePath: targetPath,
+              fileName: safeFilename,
+              size: bytesReceived,
+            })
+          );
+        });
+
+        writeStream.on('error', (err) => {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+      } catch (err: unknown) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (err as Error).message }));
+      }
+      return;
+    }
+
     // Serve Static Web PWA files
     this.serveStaticFile(pathname, res);
   }
@@ -203,54 +257,108 @@ export class AntilinkDaemonServer {
     this.wss.on('connection', (ws, req) => {
       const parsed = url.parse(req.url || '', true);
       const queryToken = parsed.query.token as string | undefined;
+      const queryDeviceId = parsed.query.deviceId as string | undefined;
+      const queryDeviceName = (parsed.query.deviceName as string) || 'Browser Companion';
+      const queryPin = parsed.query.pin as string | undefined;
 
-      let authenticated = queryToken === this.token;
+      const rawIp =
+        (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
+        req.socket.remoteAddress ||
+        '127.0.0.1';
+      const clientIp = rawIp.replace(/^.*:/, '').trim() || '127.0.0.1';
 
-      if (authenticated) {
-        this.connectedSockets.add(ws);
+      if (this.security.isRateLimited(clientIp)) {
         this.sendTo(ws, {
-          type: 'AUTH_SUCCESS',
-          session: {
-            paired: true,
-            machineName: this.telemetry.getTelemetry(this.caffeinate.getStatus()).hostname,
-          },
+          type: 'AUTH_FAILED',
+          error: 'IP temporarily locked out due to multiple failed security attempts. Please wait 15 minutes.',
         });
-        this.sendTo(ws, {
-          type: 'INITIAL_STATE',
-          data: this.getInitialState(),
-        });
+        ws.close();
+        return;
+      }
+
+      const session = {
+        ip: clientIp,
+        tokenAuthenticated: queryToken === this.token,
+        deviceId: queryDeviceId || '',
+        deviceName: queryDeviceName,
+        devicePaired: queryDeviceId ? this.security.isDevicePaired(queryDeviceId) : false,
+        pinVerified: queryPin ? this.security.verifyPin(queryPin) : false,
+        pinError: undefined as string | undefined,
+      };
+
+      if (session.tokenAuthenticated && queryDeviceId) {
+        this.evaluateAndAuthorize(ws, session);
       }
 
       ws.on('message', (raw) => {
         try {
           const msg = JSON.parse(raw.toString()) as AntilinkClientMessage;
 
-          if (msg.type === 'AUTH') {
+          if (msg.type === 'DEVICE_HANDSHAKE') {
             if (msg.token === this.token) {
-              authenticated = true;
-              this.connectedSockets.add(ws);
-              this.sendTo(ws, {
-                type: 'AUTH_SUCCESS',
-                session: {
-                  paired: true,
-                  machineName: this.telemetry.getTelemetry(this.caffeinate.getStatus()).hostname,
-                },
-              });
-              this.sendTo(ws, {
-                type: 'INITIAL_STATE',
-                data: this.getInitialState(),
-              });
+              session.tokenAuthenticated = true;
+            } else {
+              this.security.recordFailedAttempt(session.ip);
+              this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Invalid authentication token' });
+              return;
+            }
+
+            session.deviceId = msg.deviceId;
+            session.deviceName = msg.deviceName || session.deviceName;
+            session.devicePaired = this.security.isDevicePaired(msg.deviceId);
+            if (msg.pin) {
+              session.pinVerified = this.security.verifyPin(msg.pin);
+            }
+            this.evaluateAndAuthorize(ws, session);
+            return;
+          }
+
+          if (msg.type === 'PAIR_VERIFY') {
+            const success = this.security.verifyPairingCode(msg.deviceId, msg.code, session.ip);
+            if (success) {
+              session.devicePaired = true;
+              session.deviceId = msg.deviceId;
+              this.evaluateAndAuthorize(ws, session);
             } else {
               this.sendTo(ws, {
-                type: 'AUTH_FAILED',
-                error: 'Invalid authentication token',
+                type: 'PAIR_CHALLENGE',
+                deviceId: msg.deviceId,
+                deviceName: session.deviceName,
+                message: 'Invalid pairing code. Please check your Mac terminal screen.',
               });
             }
             return;
           }
 
-          if (!authenticated) {
-            this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Authentication required' });
+          if (msg.type === 'PIN_VERIFY') {
+            if (this.security.verifyPin(msg.pin)) {
+              session.pinVerified = true;
+              session.pinError = undefined;
+              this.evaluateAndAuthorize(ws, session);
+            } else {
+              this.security.recordFailedAttempt(session.ip);
+              this.sendTo(ws, {
+                type: 'PIN_REQUIRED',
+                error: 'Incorrect Master PIN. Please try again.',
+              });
+            }
+            return;
+          }
+
+          if (msg.type === 'AUTH') {
+            if (msg.token === this.token) {
+              session.tokenAuthenticated = true;
+              this.evaluateAndAuthorize(ws, session);
+            } else {
+              this.security.recordFailedAttempt(session.ip);
+              this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Invalid authentication token' });
+            }
+            return;
+          }
+
+          // Strict gate: No client operations permitted until both hardware paired and PIN verified
+          if (!session.tokenAuthenticated || !session.devicePaired || !session.pinVerified) {
+            this.evaluateAndAuthorize(ws, session);
             return;
           }
 
@@ -263,6 +371,77 @@ export class AntilinkDaemonServer {
       ws.on('close', () => {
         this.connectedSockets.delete(ws);
       });
+    });
+  }
+
+  private evaluateAndAuthorize(
+    ws: WebSocket,
+    session: {
+      ip: string;
+      tokenAuthenticated: boolean;
+      deviceId: string;
+      deviceName: string;
+      devicePaired: boolean;
+      pinVerified: boolean;
+      pinError?: string;
+    }
+  ): void {
+    if (!session.tokenAuthenticated) {
+      this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Authentication required' });
+      return;
+    }
+
+    // Tier 1: Hardware Device Pairing Check
+    if (!session.devicePaired) {
+      if (!session.deviceId) {
+        this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Missing device hardware identity' });
+        return;
+      }
+
+      this.security.createPairingChallenge(
+        session.deviceId,
+        session.deviceName,
+        session.ip,
+        () => {
+          session.devicePaired = true;
+          this.evaluateAndAuthorize(ws, session);
+        }
+      );
+
+      this.sendTo(ws, {
+        type: 'PAIR_CHALLENGE',
+        deviceId: session.deviceId,
+        deviceName: session.deviceName,
+        message: 'Please enter the 6-digit pairing code displayed on your Mac terminal screen, or press y on your Mac keyboard.',
+      });
+      return;
+    }
+
+    // Tier 2: Master Security PIN Check
+    if (!session.pinVerified) {
+      this.sendTo(ws, {
+        type: 'PIN_REQUIRED',
+        error: session.pinError,
+      });
+      return;
+    }
+
+    // Both Tier 1 (Device Pairing) and Tier 2 (Master PIN) verified!
+    this.security.resetFailedAttempts(session.ip);
+    this.security.touchDevice(session.deviceId, session.ip);
+    this.connectedSockets.add(ws);
+
+    this.sendTo(ws, {
+      type: 'AUTH_SUCCESS',
+      session: {
+        paired: true,
+        machineName: this.telemetry.getTelemetry(this.caffeinate.getStatus()).hostname,
+      },
+    });
+
+    this.sendTo(ws, {
+      type: 'INITIAL_STATE',
+      data: this.getInitialState(),
     });
   }
 
@@ -429,25 +608,28 @@ export class AntilinkDaemonServer {
   private injectKeystrokeToTerminal(text: string, hitReturn: boolean = true): void {
     try {
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      // Reliable terminal focus via Command Palette 'Terminal: Focus Terminal', keystroke, and restore frontmost app
+      // Direct menu click 'View > Terminal' focuses the terminal without popping command palettes or searching
       const script = `osascript -e '
 tell application "System Events"
-  set frontApp to name of first process whose frontmost is true
+  set prevApp to ""
+  try
+    set prevApp to name of first process whose frontmost is true
+  end try
   tell application "Visual Studio Code" to activate
-  delay 0.08
+  delay 0.1
   tell process "Code"
-    keystroke "P" using {command down, shift down}
-    delay 0.12
-    keystroke "Terminal: Focus Terminal"
-    delay 0.12
-    key code 36
-    delay 0.12
+    try
+      click menu item "Terminal" of menu "View" of menu bar 1
+    end try
+    delay 0.1
     keystroke "${escaped}"
-    ${hitReturn ? 'delay 0.06\nkey code 36' : ''}
+    ${hitReturn ? 'delay 0.05\nkey code 36' : ''}
   end tell
   delay 0.08
-  if frontApp is not "Code" and frontApp is not "Visual Studio Code" then
-    tell application frontApp to activate
+  if prevApp is not "" and prevApp is not "Code" and prevApp is not "Visual Studio Code" then
+    try
+      tell application prevApp to activate
+    end try
   end if
 end tell
 '`;
@@ -519,6 +701,13 @@ end tell
       });
     });
 
+    this.agentBridge.on('tool_confirmation_resolved', ({ stepIdx }) => {
+      this.broadcast({
+        type: 'TOOL_CONFIRM_RESOLVED',
+        stepIdx,
+      });
+    });
+
     this.agentBridge.on('agent_idle', () => {
       this.processNextQueuedPrompt();
     });
@@ -576,6 +765,7 @@ end tell
       recentSteps: this.agentBridge.getRecentSteps(),
       isAgentWorking: this.agentBridge.isAgentWorking(),
       promptQueue: this.promptQueue,
+      activeConfirmation: this.agentBridge.getActiveConfirmation(),
     };
   }
 

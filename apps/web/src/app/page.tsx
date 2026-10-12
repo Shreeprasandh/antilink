@@ -12,6 +12,8 @@ import { ConversationsDrawer } from '@/components/ConversationsDrawer';
 import { AuxiliaryDrawer } from '@/components/AuxiliaryDrawer';
 import { ShortcutsModal } from '@/components/ShortcutsModal';
 import { SettingsModal } from '@/components/SettingsModal';
+import { GatewayModal } from '@/components/GatewayModal';
+import { SecurityLockModal } from '@/components/SecurityLockModal';
 
 export default function AntilinkApp() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('stream');
@@ -19,6 +21,7 @@ export default function AntilinkApp() {
   const [isAuxiliaryOpen, setIsAuxiliaryOpen] = useState(false);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isGatewayModalOpen, setIsGatewayModalOpen] = useState(false);
 
   const [userName, setUserName] = useState('Shreeprasandh');
   const [assistantName, setAssistantName] = useState('Luna');
@@ -29,9 +32,13 @@ export default function AntilinkApp() {
       const storedUser = localStorage.getItem('antilink_user_name');
       const storedAssistant = localStorage.getItem('antilink_assistant_name');
       const storedEmail = localStorage.getItem('antilink_user_email');
+      const storedGateway = localStorage.getItem('antilink_gateway_url');
       if (storedUser) setUserName(storedUser);
       if (storedAssistant) setAssistantName(storedAssistant);
       if (storedEmail) setUserEmail(storedEmail);
+      if (!storedGateway && window.location.hostname.includes('vercel.app')) {
+        setIsGatewayModalOpen(true);
+      }
     }
   }, []);
 
@@ -64,6 +71,15 @@ export default function AntilinkApp() {
     subagents,
     tasks,
     artifacts,
+    gatewayUrl,
+    isPairingRequired,
+    pairingMessage,
+    isPinRequired,
+    pinError,
+    submitPairingCode,
+    submitPin,
+    disconnect,
+    setGateway,
     sendPrompt,
     cancelQueuedPrompt,
     confirmTool,
@@ -92,6 +108,7 @@ export default function AntilinkApp() {
         setIsAuxiliaryOpen(false);
         setIsShortcutsOpen(false);
         setIsSettingsOpen(false);
+        setIsGatewayModalOpen(false);
         return;
       }
 
@@ -141,6 +158,7 @@ export default function AntilinkApp() {
         telemetry={telemetry}
         userEmail={userEmail}
         remoteControlUrl={remoteControlUrl}
+        onOpenGatewayModal={() => setIsGatewayModalOpen(true)}
         onOpenConversations={() => setIsConversationsOpen(true)}
         onOpenAuxiliary={() => setIsAuxiliaryOpen(true)}
         onToggleCaffeinate={toggleCaffeinate}
@@ -164,6 +182,8 @@ export default function AntilinkApp() {
         <main className="flex-1 flex flex-col overflow-hidden relative">
           <div className={`h-full w-full flex flex-col ${activeTab === 'stream' ? '' : 'hidden'}`}>
             <AgentStream
+              isActive={activeTab === 'stream'}
+              gatewayUrl={gatewayUrl}
               steps={steps}
               activeConfirmation={activeConfirmation}
               activeConversationTitle={activeConversationTitle}
@@ -182,7 +202,7 @@ export default function AntilinkApp() {
           </div>
 
           <div className={`h-full w-full flex flex-col ${activeTab === 'preview' ? '' : 'hidden'}`}>
-            <PreviewMatrix ports={ports} onScanPorts={scanPorts} />
+            <PreviewMatrix ports={ports} gatewayUrl={gatewayUrl} onScanPorts={scanPorts} />
           </div>
 
           <div className={`h-full w-full flex flex-col ${activeTab === 'git' ? '' : 'hidden'}`}>
@@ -253,6 +273,35 @@ export default function AntilinkApp() {
         assistantName={assistantName}
         userEmail={userEmail}
         onSave={handleSaveSettings}
+      />
+
+      {/* Mac Gateway Connection Modal */}
+      <GatewayModal
+        isOpen={isGatewayModalOpen}
+        onClose={() => setIsGatewayModalOpen(false)}
+        status={status}
+        machineName={machineName}
+        latencyMs={latencyMs}
+        currentGatewayUrl={gatewayUrl}
+        userName={userName}
+        onConnect={(newGateway) => setGateway(newGateway)}
+        onUpdateUserName={(name) => {
+          setUserName(name);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('antilink_user_name', name);
+          }
+        }}
+      />
+
+      {/* Hardware Device Pairing & Master PIN Security Modal */}
+      <SecurityLockModal
+        isOpen={isPairingRequired || isPinRequired}
+        mode={isPairingRequired ? 'pairing' : 'pin'}
+        pairingMessage={pairingMessage}
+        pinError={pinError || undefined}
+        onSubmitPairingCode={submitPairingCode}
+        onSubmitPin={submitPin}
+        onDisconnect={disconnect}
       />
     </div>
   );
