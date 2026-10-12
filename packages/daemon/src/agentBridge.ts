@@ -74,7 +74,7 @@ export class AgentBridge extends EventEmitter {
     if (fs.existsSync(this.dbPath)) {
       try {
         const stdout = execSync(
-          `/usr/bin/sqlite3 -readonly "${this.dbPath}" "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = '${this.activeConversationId}';"`,
+          `/usr/bin/sqlite3 -readonly "${this.dbPath}" "SELECT status, not_fully_idle FROM conversation_summaries WHERE conversation_id = '${this.activeConversationId}';" 2>/dev/null`,
           { encoding: 'utf-8', timeout: 800 }
         );
         const line = stdout.trim();
@@ -141,7 +141,7 @@ export class AgentBridge extends EventEmitter {
     try {
       if (fs.existsSync(this.dbPath)) {
         const stdout = execSync(
-          `/usr/bin/sqlite3 "${this.dbPath}" -json "SELECT title, preview FROM conversation_summaries WHERE conversation_id = '${this.activeConversationId}';"`,
+          `/usr/bin/sqlite3 "${this.dbPath}" -json "SELECT title, preview FROM conversation_summaries WHERE conversation_id = '${this.activeConversationId}';" 2>/dev/null`,
           { encoding: 'utf-8', timeout: 1000 }
         );
         const rows = JSON.parse(stdout || '[]');
@@ -197,7 +197,7 @@ export class AgentBridge extends EventEmitter {
     if (fs.existsSync(this.dbPath)) {
       try {
         const stdout = execSync(
-          `/usr/bin/sqlite3 "${this.dbPath}" -json "SELECT conversation_id, title, preview, step_count, last_modified_time FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 30;"`,
+          `/usr/bin/sqlite3 "${this.dbPath}" -json "SELECT conversation_id, title, preview, step_count, last_modified_time FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 30;" 2>/dev/null`,
           { encoding: 'utf-8', timeout: 1500 }
         );
         const rows = JSON.parse(stdout || '[]');
