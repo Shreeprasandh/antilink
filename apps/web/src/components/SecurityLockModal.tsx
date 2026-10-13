@@ -11,6 +11,7 @@ interface SecurityLockModalProps {
   onSubmitPairingCode: (code: string) => void;
   onSubmitPin: (pin: string) => void;
   onDisconnect?: () => void;
+  onOpenLegal?: () => void;
 }
 
 export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
@@ -21,6 +22,7 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
   onSubmitPairingCode,
   onSubmitPin,
   onDisconnect,
+  onOpenLegal,
 }) => {
   const [pairingCodeInput, setPairingCodeInput] = useState('');
   const [pinInput, setPinInput] = useState('');
@@ -115,8 +117,15 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
         {mode === 'pairing' ? (
           <form onSubmit={handlePairingSubmit} className="p-5 space-y-4 text-xs">
             <div className="text-center space-y-2">
-              <div className="w-12 h-12 mx-auto rounded-full bg-palenight-yellow/10 border border-palenight-yellow/30 flex items-center justify-center">
-                <Terminal className="w-6 h-6 text-palenight-yellow" />
+              <div className="relative w-14 h-14 mx-auto">
+                <img
+                  src="/icon-192.png"
+                  alt="Antilink Emblem"
+                  className="w-14 h-14 rounded-full object-cover ring-2 ring-palenight-yellow/50 shadow-lg"
+                />
+                <div className="absolute -bottom-1 -right-1 bg-palenight-dark rounded-full p-1 border border-palenight-border">
+                  <Terminal className="w-3.5 h-3.5 text-palenight-yellow" />
+                </div>
               </div>
               <h3 className="font-bold text-palenight-bright text-sm">Physical Mac Authorization</h3>
               <p className="text-[11px] text-palenight-muted leading-relaxed">
@@ -164,9 +173,16 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
           </form>
         ) : (
           <form onSubmit={handlePinFormSubmit} className="p-5 space-y-4 text-xs">
-            <div className="text-center space-y-1.5">
-              <div className="w-12 h-12 mx-auto rounded-full bg-palenight-mauve/10 border border-palenight-mauve/30 flex items-center justify-center">
-                <Lock className="w-6 h-6 text-palenight-mauve" />
+            <div className="text-center space-y-2">
+              <div className="relative w-14 h-14 mx-auto">
+                <img
+                  src="/icon-192.png"
+                  alt="Antilink Emblem"
+                  className="w-14 h-14 rounded-full object-cover ring-2 ring-palenight-mauve/50 shadow-lg"
+                />
+                <div className="absolute -bottom-1 -right-1 bg-palenight-dark rounded-full p-1 border border-palenight-border">
+                  <Lock className="w-3.5 h-3.5 text-palenight-mauve" />
+                </div>
               </div>
               <h3 className="font-bold text-palenight-bright text-sm">Security PIN Lock</h3>
               <p className="text-[11px] text-palenight-muted">
@@ -221,6 +237,18 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
               </button>
             </div>
           </form>
+        )}
+
+        {onOpenLegal && (
+          <div className="text-center pb-3 pt-1 border-t border-palenight-border/40">
+            <button
+              type="button"
+              onClick={onOpenLegal}
+              className="text-[10px] text-palenight-muted hover:text-palenight-mauve underline underline-offset-2 transition-colors cursor-pointer"
+            >
+              Privacy Policy, Terms of Service & Copyright Attributions
+            </button>
+          </div>
         )}
       </div>
     </div>

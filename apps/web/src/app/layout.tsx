@@ -5,6 +5,11 @@ export const metadata: Metadata = {
   title: 'Antilink Cockpit',
   description: 'Mobile-first companion bridge, live agent stream, and multi-port dev preview for Google Antigravity',
   manifest: '/manifest.json',
+  icons: {
+    icon: '/favicon.png',
+    shortcut: '/favicon.png',
+    apple: '/apple-touch-icon.png',
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
@@ -29,7 +34,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <link rel="apple-touch-icon" href="/icon-192.png" />
+        <link rel="icon" href="/favicon.png" type="image/png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </head>
       <body className="bg-palenight-bg text-palenight-fg antialiased select-none">
         {children}

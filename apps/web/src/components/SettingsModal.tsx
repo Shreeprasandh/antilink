@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { X, User, Bot, Mail, ShieldCheck, Check, RotateCcw } from 'lucide-react';
+import { X, User, Bot, Mail, ShieldCheck, Check, RotateCcw, Scale } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -10,6 +10,7 @@ interface SettingsModalProps {
   assistantName: string;
   userEmail: string;
   onSave: (settings: { userName: string; assistantName: string; userEmail: string }) => void;
+  onOpenLegal?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -19,6 +20,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   assistantName: initialAssistantName,
   userEmail: initialUserEmail,
   onSave,
+  onOpenLegal,
 }) => {
   const [userName, setUserName] = useState(initialUserName);
   const [assistantName, setAssistantName] = useState(initialAssistantName);
@@ -132,6 +134,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <code className="text-palenight-bright">~/.gemini/antigravity-cli/settings.json</code>.
             </p>
           </div>
+
+          {/* Legal, Privacy & Compliance Entry */}
+          {onOpenLegal && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenLegal();
+              }}
+              className="w-full flex items-center justify-between px-3 py-2 rounded bg-palenight-dark/60 hover:bg-palenight-dark border border-palenight-border/60 hover:border-palenight-mauve/50 text-palenight-fg hover:text-palenight-bright transition-colors cursor-pointer text-[11px]"
+            >
+              <div className="flex items-center space-x-2">
+                <Scale className="w-3.5 h-3.5 text-palenight-mauve" />
+                <span>Privacy Policy, Terms & Attributions</span>
+              </div>
+              <span className="text-[10px] text-palenight-muted font-mono">View Legal &rarr;</span>
+            </button>
+          )}
 
           {/* Footer Buttons */}
           <div className="flex items-center justify-between pt-2 border-t border-palenight-border/60">

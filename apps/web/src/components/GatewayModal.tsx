@@ -25,6 +25,7 @@ interface GatewayModalProps {
   userName: string;
   onConnect: (gatewayInput: string) => void;
   onUpdateUserName?: (name: string) => void;
+  onOpenLegal?: () => void;
 }
 
 export const GatewayModal: React.FC<GatewayModalProps> = ({
@@ -37,6 +38,7 @@ export const GatewayModal: React.FC<GatewayModalProps> = ({
   userName: initialUserName,
   onConnect,
   onUpdateUserName,
+  onOpenLegal,
 }) => {
   const [gatewayInput, setGatewayInput] = useState('');
   const [operatorName, setOperatorName] = useState(initialUserName);
@@ -106,7 +108,11 @@ export const GatewayModal: React.FC<GatewayModalProps> = ({
         {/* Header */}
         <div className="h-10 bg-palenight-dark border-b border-palenight-border px-3.5 flex items-center justify-between">
           <div className="flex items-center space-x-2 text-xs font-bold text-palenight-bright">
-            <Radio className="w-4 h-4 text-palenight-green animate-pulse" />
+            <img
+              src="/icon-192.png"
+              alt="Antilink"
+              className="w-4 h-4 rounded-full object-cover ring-1 ring-palenight-green/40 shrink-0"
+            />
             <span>Connect Antilink Mac Gateway</span>
           </div>
           <button
@@ -254,6 +260,21 @@ export const GatewayModal: React.FC<GatewayModalProps> = ({
               </button>
             </div>
           </div>
+
+          {onOpenLegal && (
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenLegal();
+                }}
+                className="text-[10px] text-palenight-muted hover:text-palenight-mauve underline underline-offset-2 transition-colors cursor-pointer"
+              >
+                Privacy Policy, Terms of Service & Copyright Attributions
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>

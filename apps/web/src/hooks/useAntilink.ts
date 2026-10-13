@@ -53,10 +53,18 @@ export function useAntilink() {
     if (typeof window === 'undefined') return;
 
     const params = new URLSearchParams(window.location.search);
-    const queryGateway = params.get('gateway');
-    const queryToken = params.get('token');
+    let queryGateway = params.get('gateway');
+    let queryToken = params.get('token');
 
     if (queryGateway) {
+      try {
+        const gu = new URL(queryGateway.startsWith('http') ? queryGateway : `https://${queryGateway}`);
+        const gt = gu.searchParams.get('token');
+        if (gt && !queryToken) queryToken = gt;
+        queryGateway = gu.origin;
+      } catch {
+        // ignore
+      }
       localStorage.setItem('antilink_gateway_url', queryGateway);
     }
     if (queryToken) {
@@ -66,17 +74,23 @@ export function useAntilink() {
     let storedGateway = localStorage.getItem('antilink_gateway_url') || '';
     let token = queryToken || localStorage.getItem('antilink_token') || '';
 
-    // If storedGateway is a full URL containing ?token=...
-    if (storedGateway.includes('?token=')) {
+    // If storedGateway is a full URL containing ?token=... or ?gateway=...
+    if (storedGateway.includes('?token=') || storedGateway.includes('?gateway=')) {
       try {
-        const u = new URL(storedGateway);
-        const t = u.searchParams.get('token');
-        if (t && !token) {
-          token = t;
-          localStorage.setItem('antilink_token', t);
+        const u = new URL(storedGateway.startsWith('http') ? storedGateway : `https://${storedGateway}`);
+        if (u.searchParams.has('gateway')) {
+          const inner = u.searchParams.get('gateway')!;
+          const iu = new URL(inner.startsWith('http') ? inner : `https://${inner}`);
+          storedGateway = iu.origin;
+          const it = iu.searchParams.get('token');
+          if (it && !token) token = it;
+        } else {
+          const t = u.searchParams.get('token');
+          if (t && !token) token = t;
+          storedGateway = u.origin;
         }
-        storedGateway = u.origin;
         localStorage.setItem('antilink_gateway_url', storedGateway);
+        if (token) localStorage.setItem('antilink_token', token);
       } catch {
         // ignore
       }
@@ -384,14 +398,40 @@ export function useAntilink() {
       if (typeof window === 'undefined') return;
       try {
         const trimmed = urlWithToken.trim();
+        if (!trimmed) {
+          localStorage.removeItem('antilink_gateway_url');
+          localStorage.removeItem('antilink_token');
+          setGatewayUrl('');
+          if (socketRef.current) socketRef.current.close();
+          setStatus('disconnected');
+          return;
+        }
+
         const withProto = trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
         const u = new URL(withProto);
-        const token = u.searchParams.get('token');
+
+        let targetGateway = u.origin;
+        let token = u.searchParams.get('token');
+
+        // If the user pasted a Vercel URL that wraps the actual gateway (e.g. ?gateway=https://...&token=...)
+        if (u.searchParams.has('gateway')) {
+          const innerGateway = u.searchParams.get('gateway')!;
+          const innerWithProto = innerGateway.startsWith('http') ? innerGateway : `https://${innerGateway}`;
+          try {
+            const innerU = new URL(innerWithProto);
+            targetGateway = innerU.origin;
+            const innerToken = innerU.searchParams.get('token');
+            if (innerToken) token = innerToken;
+          } catch {
+            targetGateway = innerGateway;
+          }
+        }
+
         if (token) {
           localStorage.setItem('antilink_token', token);
         }
-        localStorage.setItem('antilink_gateway_url', u.origin);
-        setGatewayUrl(u.origin);
+        localStorage.setItem('antilink_gateway_url', targetGateway);
+        setGatewayUrl(targetGateway);
         if (socketRef.current) {
           socketRef.current.close();
         }

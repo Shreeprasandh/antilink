@@ -14,6 +14,7 @@ import { ShortcutsModal } from '@/components/ShortcutsModal';
 import { SettingsModal } from '@/components/SettingsModal';
 import { GatewayModal } from '@/components/GatewayModal';
 import { SecurityLockModal } from '@/components/SecurityLockModal';
+import { LegalModal } from '@/components/LegalModal';
 
 export default function AntilinkApp() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('stream');
@@ -22,6 +23,7 @@ export default function AntilinkApp() {
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGatewayModalOpen, setIsGatewayModalOpen] = useState(false);
+  const [isLegalOpen, setIsLegalOpen] = useState(false);
 
   const [userName, setUserName] = useState('Shreeprasandh');
   const [assistantName, setAssistantName] = useState('Luna');
@@ -33,10 +35,11 @@ export default function AntilinkApp() {
       const storedAssistant = localStorage.getItem('antilink_assistant_name');
       const storedEmail = localStorage.getItem('antilink_user_email');
       const storedGateway = localStorage.getItem('antilink_gateway_url');
+      const hasQueryGateway = new URLSearchParams(window.location.search).get('gateway');
       if (storedUser) setUserName(storedUser);
       if (storedAssistant) setAssistantName(storedAssistant);
       if (storedEmail) setUserEmail(storedEmail);
-      if (!storedGateway && window.location.hostname.includes('vercel.app')) {
+      if (!storedGateway && !hasQueryGateway && window.location.hostname.includes('vercel.app')) {
         setIsGatewayModalOpen(true);
       }
     }
@@ -109,6 +112,7 @@ export default function AntilinkApp() {
         setIsShortcutsOpen(false);
         setIsSettingsOpen(false);
         setIsGatewayModalOpen(false);
+        setIsLegalOpen(false);
         return;
       }
 
@@ -273,6 +277,7 @@ export default function AntilinkApp() {
         assistantName={assistantName}
         userEmail={userEmail}
         onSave={handleSaveSettings}
+        onOpenLegal={() => setIsLegalOpen(true)}
       />
 
       {/* Mac Gateway Connection Modal */}
@@ -291,6 +296,7 @@ export default function AntilinkApp() {
             localStorage.setItem('antilink_user_name', name);
           }
         }}
+        onOpenLegal={() => setIsLegalOpen(true)}
       />
 
       {/* Hardware Device Pairing & Master PIN Security Modal */}
@@ -302,6 +308,13 @@ export default function AntilinkApp() {
         onSubmitPairingCode={submitPairingCode}
         onSubmitPin={submitPin}
         onDisconnect={disconnect}
+        onOpenLegal={() => setIsLegalOpen(true)}
+      />
+
+      {/* Privacy Policy, Terms & Legal Compliance Modal */}
+      <LegalModal
+        isOpen={isLegalOpen}
+        onClose={() => setIsLegalOpen(false)}
       />
     </div>
   );

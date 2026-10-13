@@ -72,6 +72,11 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         <div className="flex items-center space-x-1.5">
+          <img
+            src="/icon-192.png"
+            alt="Antilink Logo"
+            className="w-4 h-4 sm:w-4.5 sm:h-4.5 rounded-full object-cover ring-1 ring-palenight-mauve/40 shadow-xs shrink-0"
+          />
           <span className="font-bold tracking-wider text-palenight-bright text-xs sm:text-sm font-mono">
             ANTILINK
           </span>
