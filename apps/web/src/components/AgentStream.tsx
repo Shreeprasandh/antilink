@@ -545,6 +545,9 @@ export const AgentStream: React.FC<AgentStreamProps> = ({
       const apiBase = gatewayUrl ? gatewayUrl : '';
       const res = await fetch(`${apiBase}/api/upload?token=${token}&filename=${encodeURIComponent(file.name)}`, {
         method: 'POST',
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+        },
         body: file,
       });
       const data = await res.json();

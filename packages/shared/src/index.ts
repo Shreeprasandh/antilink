@@ -136,7 +136,8 @@ export type AntilinkServerMessage =
   | { type: 'PROMPT_QUEUE_UPDATED'; queue: QueuedPrompt[] }
   | { type: 'AGENT_STATUS_CHANGED'; isWorking: boolean }
   | { type: 'TOOL_CONFIRM_RESOLVED'; stepIdx: number }
-  | { type: 'COMMAND_OUTPUT'; output: string; exitCode?: number };
+  | { type: 'COMMAND_OUTPUT'; output: string; exitCode?: number }
+  | { type: 'SESSION_ENDED'; reason: string };
 
 export interface AntilinkInitialState {
   machineName: string;
@@ -154,4 +155,10 @@ export interface AntilinkInitialState {
   isAgentWorking?: boolean;
   promptQueue?: QueuedPrompt[];
   activeConfirmation?: ToolConfirmationPayload | null;
+  userProfile?: {
+    userName: string;
+    userEmail: string;
+    assistantName: string;
+  };
 }
+

@@ -127,10 +127,10 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
                   <Terminal className="w-3.5 h-3.5 text-palenight-yellow" />
                 </div>
               </div>
-              <h3 className="font-bold text-palenight-bright text-sm">Physical Mac Authorization</h3>
+              <h3 className="font-bold text-palenight-bright text-sm">Session Terminal Pairing</h3>
               <p className="text-[11px] text-palenight-muted leading-relaxed">
                 {pairingMessage ||
-                  "A 6-digit pairing code is displayed on your physical Mac terminal screen. Either press 'y' on your Mac keyboard or enter the code below:"}
+                  "Enter the 6-digit Session Pairing Code displayed in your active Mac terminal to connect, or press 'y' on your Mac keyboard."}
               </p>
             </div>
 
@@ -167,10 +167,11 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
                 className="flex-1 py-2 bg-palenight-yellow hover:bg-palenight-yellow/90 disabled:opacity-50 text-palenight-dark font-bold rounded cursor-pointer transition-colors text-xs flex items-center justify-center space-x-1.5 shadow-sm"
               >
                 <Check className="w-3.5 h-3.5" />
-                <span>Authorize Device</span>
+                <span>Connect & Authorize</span>
               </button>
             </div>
           </form>
+
         ) : (
           <form onSubmit={handlePinFormSubmit} className="p-5 space-y-4 text-xs">
             <div className="text-center space-y-2">

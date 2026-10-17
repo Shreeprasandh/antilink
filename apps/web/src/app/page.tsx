@@ -25,41 +25,15 @@ export default function AntilinkApp() {
   const [isGatewayModalOpen, setIsGatewayModalOpen] = useState(false);
   const [isLegalOpen, setIsLegalOpen] = useState(false);
 
-  const [userName, setUserName] = useState('Shreeprasandh');
+  const [userName, setUserName] = useState('');
   const [assistantName, setAssistantName] = useState('Luna');
-  const [userEmail, setUserEmail] = useState('shreeprasandh@gmail.com');
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const storedUser = localStorage.getItem('antilink_user_name');
-      const storedAssistant = localStorage.getItem('antilink_assistant_name');
-      const storedEmail = localStorage.getItem('antilink_user_email');
-      const storedGateway = localStorage.getItem('antilink_gateway_url');
-      const hasQueryGateway = new URLSearchParams(window.location.search).get('gateway');
-      if (storedUser) setUserName(storedUser);
-      if (storedAssistant) setAssistantName(storedAssistant);
-      if (storedEmail) setUserEmail(storedEmail);
-      if (!storedGateway && !hasQueryGateway && window.location.hostname.includes('vercel.app')) {
-        setIsGatewayModalOpen(true);
-      }
-    }
-  }, []);
-
-  const handleSaveSettings = (settings: { userName: string; assistantName: string; userEmail: string }) => {
-    setUserName(settings.userName);
-    setAssistantName(settings.assistantName);
-    setUserEmail(settings.userEmail);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('antilink_user_name', settings.userName);
-      localStorage.setItem('antilink_assistant_name', settings.assistantName);
-      localStorage.setItem('antilink_user_email', settings.userEmail);
-    }
-  };
+  const [userEmail, setUserEmail] = useState('');
 
   const {
     status,
     latencyMs,
     machineName,
+    userProfile,
     tunnelUrl,
     ports,
     telemetry,
@@ -93,10 +67,39 @@ export default function AntilinkApp() {
     execCommand,
   } = useAntilink();
 
+  // Sync developer identity securely only while authenticated
+  useEffect(() => {
+    if (status === 'connected' && userProfile) {
+      if (userProfile.userName) setUserName(userProfile.userName);
+      if (userProfile.assistantName) setAssistantName(userProfile.assistantName);
+      if (userProfile.userEmail) setUserEmail(userProfile.userEmail);
+    } else if (status !== 'connected') {
+      setUserName('');
+      setUserEmail('');
+    }
+  }, [status, userProfile]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const storedGateway = localStorage.getItem('antilink_gateway_url');
+      const hasQueryGateway = new URLSearchParams(window.location.search).get('gateway');
+      if (!storedGateway && !hasQueryGateway && window.location.hostname.includes('vercel.app')) {
+        setIsGatewayModalOpen(true);
+      }
+    }
+  }, []);
+
+  const handleSaveSettings = (settings: { userName: string; assistantName: string; userEmail: string }) => {
+    setUserName(settings.userName);
+    setAssistantName(settings.assistantName);
+    setUserEmail(settings.userEmail);
+  };
+
   const gitRepo = 'Shreeprasandh/antilink';
   const gitBranch = 'main';
   const remoteControlUrl =
     'https://antigravity.google.com/r/fe05edc8-4845-4227-8a3a-6f6eb60335d4-v2?p=c%2Fd933eaf8-272e-4559-89bc-a9c284a5eed0%3Fsection%3Ddefault-cli-project';
+
 
   // Global Keyboard Navigation Listeners
   useEffect(() => {
@@ -160,8 +163,8 @@ export default function AntilinkApp() {
         activeConversationTitle={activeConversationTitle}
         tunnelUrl={tunnelUrl}
         telemetry={telemetry}
-        userEmail={userEmail}
-        remoteControlUrl={remoteControlUrl}
+        userEmail={status === 'connected' ? userEmail : ''}
+        remoteControlUrl={status === 'connected' ? remoteControlUrl : undefined}
         onOpenGatewayModal={() => setIsGatewayModalOpen(true)}
         onOpenConversations={() => setIsConversationsOpen(true)}
         onOpenAuxiliary={() => setIsAuxiliaryOpen(true)}
@@ -213,10 +216,10 @@ export default function AntilinkApp() {
             <GitViewer
               onExecCommand={execCommand}
               commandOutput={commandOutput}
-              gitRepo={gitRepo}
-              gitBranch={gitBranch}
-              userEmail={userEmail}
-              userName={userName}
+              gitRepo={status === 'connected' ? gitRepo : 'Disconnected'}
+              gitBranch={status === 'connected' ? gitBranch : 'None'}
+              userEmail={status === 'connected' ? userEmail : ''}
+              userName={status === 'connected' ? userName : 'Standby'}
             />
           </div>
 
@@ -273,12 +276,14 @@ export default function AntilinkApp() {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        isConnected={status === 'connected'}
         userName={userName}
         assistantName={assistantName}
         userEmail={userEmail}
         onSave={handleSaveSettings}
         onOpenLegal={() => setIsLegalOpen(true)}
       />
+
 
       {/* Mac Gateway Connection Modal */}
       <GatewayModal

@@ -20,6 +20,8 @@ build/
 .env.local
 .env.*.local
 .env.mcp
+.antilink*
+
 
 # Logs & Diagnostics
 *.log

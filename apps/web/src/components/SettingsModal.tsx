@@ -6,6 +6,7 @@ import { X, User, Bot, Mail, ShieldCheck, Check, RotateCcw, Scale } from 'lucide
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  isConnected: boolean;
   userName: string;
   assistantName: string;
   userEmail: string;
@@ -16,6 +17,7 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
+  isConnected,
   userName: initialUserName,
   assistantName: initialAssistantName,
   userEmail: initialUserEmail,
@@ -27,14 +29,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [userEmail, setUserEmail] = useState(initialUserEmail);
   const [isSaved, setIsSaved] = useState(false);
 
+  // Sync with prop updates
+  React.useEffect(() => {
+    setUserName(initialUserName);
+    setAssistantName(initialAssistantName);
+    setUserEmail(initialUserEmail);
+  }, [initialUserName, initialAssistantName, initialUserEmail]);
+
   if (!isOpen) return null;
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isConnected) return;
     onSave({
-      userName: userName.trim() || 'Shreeprasandh',
+      userName: userName.trim() || 'Operator',
       assistantName: assistantName.trim() || 'Luna',
-      userEmail: userEmail.trim() || 'shreeprasandh@gmail.com',
+      userEmail: userEmail.trim(),
     });
     setIsSaved(true);
     setTimeout(() => {
@@ -44,10 +54,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleReset = () => {
-    setUserName('Shreeprasandh');
+    if (!isConnected) return;
+    setUserName('Operator');
     setAssistantName('Luna');
-    setUserEmail('shreeprasandh@gmail.com');
+    setUserEmail('');
   };
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-xs select-none font-mono">
@@ -72,6 +84,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSave} className="p-4 space-y-4 text-xs">
+          {!isConnected && (
+            <div className="bg-palenight-dark/90 border border-palenight-border/80 rounded-lg p-3 text-center space-y-1">
+              <div className="text-palenight-red font-bold text-xs flex items-center justify-center space-x-1.5">
+                <span className="w-2 h-2 rounded-full bg-palenight-red" />
+                <span>Daemon Disconnected</span>
+              </div>
+              <p className="text-[11px] text-palenight-muted leading-relaxed">
+                Host account email and developer identity synchronize securely once your Mac terminal daemon connects.
+              </p>
+            </div>
+          )}
+
           {/* User Name */}
           <div className="space-y-1.5">
             <label className="flex items-center space-x-1.5 text-palenight-blue font-bold text-[11px]">
@@ -80,10 +104,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </label>
             <input
               type="text"
-              value={userName}
+              value={isConnected ? userName : ''}
               onChange={(e) => setUserName(e.target.value)}
-              placeholder="e.g. Shreeprasandh"
-              className="w-full bg-palenight-dark border border-palenight-border rounded px-3 py-2 text-palenight-bright placeholder:text-palenight-muted/50 focus:outline-hidden focus:border-palenight-blue text-xs font-mono transition-colors"
+              disabled={!isConnected}
+              placeholder={isConnected ? 'e.g. Operator' : 'Not Connected'}
+              className="w-full bg-palenight-dark border border-palenight-border disabled:opacity-50 rounded px-3 py-2 text-palenight-bright placeholder:text-palenight-muted/50 focus:outline-hidden focus:border-palenight-blue text-xs font-mono transition-colors"
             />
             <p className="text-[10px] text-palenight-muted">
               Displayed as your chat bubble header across all session transcripts.
@@ -98,10 +123,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </label>
             <input
               type="text"
-              value={assistantName}
+              value={isConnected ? assistantName : 'Luna'}
               onChange={(e) => setAssistantName(e.target.value)}
+              disabled={!isConnected}
               placeholder="e.g. Luna"
-              className="w-full bg-palenight-dark border border-palenight-border rounded px-3 py-2 text-palenight-bright placeholder:text-palenight-muted/50 focus:outline-hidden focus:border-palenight-mauve text-xs font-mono transition-colors"
+              className="w-full bg-palenight-dark border border-palenight-border disabled:opacity-50 rounded px-3 py-2 text-palenight-bright placeholder:text-palenight-muted/50 focus:outline-hidden focus:border-palenight-mauve text-xs font-mono transition-colors"
             />
             <p className="text-[10px] text-palenight-muted">
               Displayed as the assistant response badge and stream identifier.
@@ -116,10 +142,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </label>
             <input
               type="email"
-              value={userEmail}
+              value={isConnected ? userEmail : ''}
               onChange={(e) => setUserEmail(e.target.value)}
-              placeholder="e.g. shreeprasandh@gmail.com"
-              className="w-full bg-palenight-dark border border-palenight-border rounded px-3 py-2 text-palenight-bright placeholder:text-palenight-muted/50 focus:outline-hidden focus:border-palenight-cyan text-xs font-mono transition-colors"
+              disabled={!isConnected}
+              placeholder={isConnected ? 'e.g. developer@company.com' : 'Not Connected'}
+              className="w-full bg-palenight-dark border border-palenight-border disabled:opacity-50 rounded px-3 py-2 text-palenight-bright placeholder:text-palenight-muted/50 focus:outline-hidden focus:border-palenight-cyan text-xs font-mono transition-colors"
             />
           </div>
 
@@ -158,7 +185,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <button
               type="button"
               onClick={handleReset}
-              className="flex items-center space-x-1 text-palenight-muted hover:text-palenight-fg px-2.5 py-1.5 rounded border border-palenight-border/40 hover:bg-palenight-dark transition-colors cursor-pointer text-[11px]"
+              disabled={!isConnected}
+              className="flex items-center space-x-1 text-palenight-muted hover:text-palenight-fg disabled:opacity-40 px-2.5 py-1.5 rounded border border-palenight-border/40 hover:bg-palenight-dark transition-colors cursor-pointer text-[11px]"
               title="Reset to defaults"
             >
               <RotateCcw className="w-3 h-3" />
@@ -175,7 +203,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="bg-palenight-mauve hover:bg-palenight-mauve/90 text-palenight-dark font-bold px-4 py-1.5 rounded flex items-center space-x-1.5 transition-all cursor-pointer shadow-xs active:scale-95 text-[11px]"
+                disabled={!isConnected}
+                className="bg-palenight-mauve hover:bg-palenight-mauve/90 disabled:opacity-40 disabled:cursor-not-allowed text-palenight-dark font-bold px-4 py-1.5 rounded flex items-center space-x-1.5 transition-all cursor-pointer shadow-xs active:scale-95 text-[11px]"
               >
                 {isSaved ? <Check className="w-3.5 h-3.5" /> : null}
                 <span>{isSaved ? 'Saved!' : 'Save Changes'}</span>
@@ -183,6 +212,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
         </form>
+
       </div>
     </div>
   );

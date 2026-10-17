@@ -1,12 +1,18 @@
 import * as os from 'node:os';
 import qrcode from 'qrcode-terminal';
 import { AntilinkDaemonServer } from './server.js';
-import { CloudflareTunnelManager } from './tunnel.js';
+import {
+  ITunnelManager,
+  createTunnelManager,
+  CloudflareTunnelManager,
+  loadAntilinkConfig,
+} from './tunnel.js';
 
 export interface CliFlags {
   port: number;
   enableTunnel: boolean;
   enableCaffeinate: boolean;
+  tunnelProvider?: 'ngrok' | 'cloudflare';
 }
 
 export async function runDaemon(flags: Partial<CliFlags> = {}): Promise<void> {
@@ -37,31 +43,64 @@ export async function runDaemon(flags: Partial<CliFlags> = {}): Promise<void> {
   }
   const lanUrl = `http://${lanIp}:${port}/?token=${token}`;
 
+  const sessionCode = server.security.getSessionPairingCode();
+
   console.log('\x1b[38;2;195;232;141m[OK]\x1b[0m Daemon active on port ' + port);
   console.log('\x1b[38;2;130;170;255mLocal:\x1b[0m   ' + localUrl);
   console.log('\x1b[38;2;130;170;255mWi-Fi:\x1b[0m   ' + lanUrl);
+  console.log('');
+  console.log('\x1b[38;2;199;146;234m' + '--------------------------------------------------' + '\x1b[0m');
+  console.log(`\x1b[38;2;195;232;141m\x1b[1m   SESSION PAIRING CODE: [ ${sessionCode.split('').join(' ')} ]   \x1b[0m`);
+  console.log('\x1b[38;2;103;110;149m      Enter this code on your phone when prompted     ' + '\x1b[0m');
+  console.log('\x1b[38;2;137;221;255m      Or press "y" in this terminal to quick-approve  \x1b[0m');
+  console.log('\x1b[38;2;199;146;234m' + '--------------------------------------------------' + '\x1b[0m\n');
+
 
   let activeAccessUrl = lanUrl;
+  let activeTunnel: ITunnelManager | null = null;
 
   if (enableTunnel) {
-    console.log('\x1b[38;2;247;140;108m[TUNNEL]\x1b[0m Provisioning Cloudflare Quick Tunnel...');
-    const tunnel = new CloudflareTunnelManager(port);
+    const config = loadAntilinkConfig();
+    const preferredProvider: 'ngrok' | 'cloudflare' =
+      flags.tunnelProvider ||
+      (process.env.ANTILINK_TUNNEL_PROVIDER as 'ngrok' | 'cloudflare') ||
+      config.tunnel?.provider ||
+      (config.tunnel?.ngrokAuthtoken ? 'ngrok' : 'cloudflare');
+
+    const providerLabel =
+      preferredProvider === 'ngrok'
+        ? `ngrok Permanent Static (${config.tunnel?.ngrokDomain || 'Default Edge'})`
+        : 'Cloudflare Quick Tunnel';
+
+    console.log(`\x1b[38;2;247;140;108m[TUNNEL]\x1b[0m Provisioning ${providerLabel}...`);
+    activeTunnel = createTunnelManager(port, preferredProvider);
+
     try {
-      const publicUrl = await tunnel.start();
+      let publicUrl = await activeTunnel.start();
+
+      // Silent Auto-Fallback: If ngrok fails, immediately fall back to Cloudflare
+      if (!publicUrl && preferredProvider === 'ngrok') {
+        console.log(
+          '\x1b[38;2;255;203;107m[FALLBACK]\x1b[0m ngrok tunnel timed out or failed. Falling back to Cloudflare...'
+        );
+        activeTunnel = new CloudflareTunnelManager(port);
+        publicUrl = await activeTunnel.start();
+      }
+
       if (publicUrl) {
         const fullPublicUrl = `${publicUrl}/?token=${token}`;
-        const vercelUrl = `https://antilink-remote.vercel.app/?gateway=${encodeURIComponent(publicUrl)}&token=${token}`;
+        const vercelUrl = `https://antilink-gold.vercel.app/?gateway=${encodeURIComponent(publicUrl)}&token=${token}`;
         server.setTunnelUrl(publicUrl);
         activeAccessUrl = vercelUrl;
         console.log('\x1b[38;2;195;232;141m[OK]\x1b[0m Public HTTPS Tunnel Ready:');
         console.log('\x1b[38;2;137;221;255m\x1b[1m' + fullPublicUrl + '\x1b[0m\n');
-        console.log('\x1b[38;2;199;146;234m[PERMANENT WEB]\x1b[0m Vercel Remote App:');
+        console.log('\x1b[38;2;199;146;234m[PERMANENT WEB]\x1b[0m Vercel Web App:');
         console.log('\x1b[38;2;195;232;141m\x1b[1m' + vercelUrl + '\x1b[0m\n');
       } else {
-        console.log('\x1b[38;2;255;203;107m[NOTE]\x1b[0m Cloudflare tunnel skipped or timed out. Use Wi-Fi URL.');
+        console.log('\x1b[38;2;255;203;107m[NOTE]\x1b[0m Public tunnel skipped or timed out. Use Wi-Fi URL.');
       }
-    } catch {
-      console.log('\x1b[38;2;255;203;107m[NOTE]\x1b[0m Tunnel provisioning failed. Using Wi-Fi URL.');
+    } catch (err) {
+      console.log('\x1b[38;2;255;203;107m[NOTE]\x1b[0m Tunnel provisioning encountered an error. Using Wi-Fi URL.');
     }
   }
 
@@ -75,8 +114,15 @@ export async function runDaemon(flags: Partial<CliFlags> = {}): Promise<void> {
     // fallback if terminal does not support QR rendering
   }
 
-  const cleanup = () => {
+  const cleanup = async () => {
     console.log('\n\x1b[38;2;247;140;108m[SHUTDOWN]\x1b[0m Stopping daemon and releasing wake-locks...');
+    if (activeTunnel) {
+      try {
+        await activeTunnel.stop();
+      } catch {
+        // ignore
+      }
+    }
     server.stop();
     process.exit(0);
   };
@@ -113,9 +159,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const noTunnel = args.includes('--no-tunnel');
   const noCaffeinate = args.includes('--no-caffeinate');
 
+  let tunnelProvider: 'ngrok' | 'cloudflare' | undefined;
+  if (args.includes('--ngrok')) {
+    tunnelProvider = 'ngrok';
+  } else if (args.includes('--cloudflare')) {
+    tunnelProvider = 'cloudflare';
+  } else {
+    const tunnelIdx = args.indexOf('--tunnel');
+    if (tunnelIdx !== -1 && args[tunnelIdx + 1]) {
+      const val = args[tunnelIdx + 1].toLowerCase();
+      if (val === 'ngrok' || val === 'cloudflare') {
+        tunnelProvider = val;
+      }
+    }
+  }
+
   runDaemon({
     port,
     enableTunnel: !noTunnel,
     enableCaffeinate: !noCaffeinate,
+    tunnelProvider,
   });
 }
+

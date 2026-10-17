@@ -38,8 +38,8 @@ export const Header: React.FC<HeaderProps> = ({
   activeConversationTitle,
   tunnelUrl,
   telemetry,
-  userEmail = 'shreeprasandh@gmail.com',
-  remoteControlUrl = 'https://antigravity.google.com/r/fe05edc8-4845-4227-8a3a-6f6eb60335d4-v2?p=c%2Fd933eaf8-272e-4559-89bc-a9c284a5eed0%3Fsection%3Ddefault-cli-project',
+  userEmail = '',
+  remoteControlUrl,
   onOpenGatewayModal,
   onOpenConversations,
   onOpenAuxiliary,
@@ -93,8 +93,14 @@ export const Header: React.FC<HeaderProps> = ({
           className="flex items-center space-x-1.5 text-palenight-bright hover:text-palenight-mauve bg-palenight-card hover:bg-palenight-card/80 border border-palenight-border px-2 py-0.5 rounded font-mono text-[11px] max-w-[120px] sm:max-w-[200px] truncate transition-colors touch-manipulation cursor-pointer"
           title={`Active Session: ${activeConversationTitle || 'Antilink'} (Click to switch session)`}
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-palenight-mauve shrink-0" />
-          <span className="truncate font-semibold">{activeConversationTitle || 'Antilink'}</span>
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              isConnected ? 'bg-palenight-mauve' : 'bg-palenight-muted'
+            }`}
+          />
+          <span className="truncate font-semibold">
+            {isConnected ? activeConversationTitle || 'Antilink' : 'Standby'}
+          </span>
         </button>
 
         <div className="h-3 w-[1px] bg-palenight-border mx-0.5 hidden xs:block" />
@@ -113,7 +119,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           />
           <span className="text-palenight-fg truncate max-w-[70px] sm:max-w-[110px] font-mono text-[11px] hidden xs:inline">
-            {isConnected ? machineName : 'Connect Mac'}
+            {isConnected ? machineName || 'Connected' : 'Connect Mac'}
           </span>
           {isConnected && (
             <span className="text-palenight-muted text-[10px] hidden sm:inline font-mono">
@@ -126,7 +132,7 @@ export const Header: React.FC<HeaderProps> = ({
       {/* Right: Remote Control Link, Wake Lock, Battery & Auxiliary Drawer */}
       <div className="flex items-center space-x-1.5 sm:space-x-2 text-[11px] font-mono">
         {/* Official Google Remote Control Direct Link Button */}
-        {remoteControlUrl && (
+        {isConnected && remoteControlUrl && (
           <a
             href={remoteControlUrl}
             target="_blank"
@@ -140,25 +146,27 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         {/* Caffeinate Wake-Lock Interactive Toggle */}
-        <button
-          onClick={() => onToggleCaffeinate && onToggleCaffeinate(!isCaffeinateOn)}
-          className={`flex items-center space-x-1 px-1.5 py-0.5 rounded border text-[10px] cursor-pointer touch-manipulation transition-all active:scale-95 ${
-            isCaffeinateOn
-              ? 'text-palenight-mauve bg-palenight-card border-palenight-mauve/60 shadow-[0_0_8px_rgba(199,146,234,0.15)]'
-              : 'text-palenight-muted bg-palenight-dark/60 border-palenight-border/60 hover:text-palenight-fg'
-          }`}
-          title={
-            isCaffeinateOn
-              ? 'macOS Sleep Prevention (Caffeinate): Active. Keeps Mac awake while running builds & tunnel. Click to toggle.'
-              : 'macOS Sleep Prevention: Inactive. Click to prevent Mac sleep.'
-          }
-        >
-          <Zap className={`w-3 h-3 ${isCaffeinateOn ? 'fill-palenight-mauve text-palenight-mauve' : ''}`} />
-          <span className="hidden xs:inline">{isCaffeinateOn ? 'WAKE' : 'SLEEP'}</span>
-        </button>
+        {isConnected && (
+          <button
+            onClick={() => onToggleCaffeinate && onToggleCaffeinate(!isCaffeinateOn)}
+            className={`flex items-center space-x-1 px-1.5 py-0.5 rounded border text-[10px] cursor-pointer touch-manipulation transition-all active:scale-95 ${
+              isCaffeinateOn
+                ? 'text-palenight-mauve bg-palenight-card border-palenight-mauve/60 shadow-[0_0_8px_rgba(199,146,234,0.15)]'
+                : 'text-palenight-muted bg-palenight-dark/60 border-palenight-border/60 hover:text-palenight-fg'
+            }`}
+            title={
+              isCaffeinateOn
+                ? 'macOS Sleep Prevention (Caffeinate): Active. Keeps Mac awake while running builds & tunnel. Click to toggle.'
+                : 'macOS Sleep Prevention: Inactive. Click to prevent Mac sleep.'
+            }
+          >
+            <Zap className={`w-3 h-3 ${isCaffeinateOn ? 'fill-palenight-mauve text-palenight-mauve' : ''}`} />
+            <span className="hidden xs:inline">{isCaffeinateOn ? 'WAKE' : 'SLEEP'}</span>
+          </button>
+        )}
 
         {/* Battery Indicator */}
-        {telemetry?.batteryPercent !== null && telemetry?.batteryPercent !== undefined && (
+        {isConnected && telemetry?.batteryPercent !== null && telemetry?.batteryPercent !== undefined && (
           <div className="flex items-center space-x-1 text-palenight-fg bg-palenight-card/60 px-1.5 py-0.5 rounded border border-palenight-border/60">
             {telemetry.isCharging ? (
               <BatteryCharging className="w-3.5 h-3.5 text-palenight-yellow" />
@@ -168,6 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-[10px] sm:text-[11px]">{telemetry.batteryPercent}%</span>
           </div>
         )}
+
 
         {/* Shortcuts Cheat Sheet Button */}
         {onOpenShortcuts && (

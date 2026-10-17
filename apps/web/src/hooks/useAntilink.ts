@@ -39,6 +39,13 @@ export function useAntilink() {
   // Gateway URL for Hosted Web PWA on Vercel
   const [gatewayUrl, setGatewayUrl] = useState<string>('');
 
+  // Host Identity profile synced from active authenticated Mac daemon
+  const [userProfile, setUserProfile] = useState<{
+    userName: string;
+    userEmail: string;
+    assistantName: string;
+  } | null>(null);
+
   // Two-Tier Hardware & Master PIN Security States
   const [isPairingRequired, setIsPairingRequired] = useState<boolean>(false);
   const [pairingMessage, setPairingMessage] = useState<string>('');
@@ -48,6 +55,26 @@ export function useAntilink() {
   const socketRef = useRef<WebSocket | null>(null);
   const pingStartRef = useRef<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetState = useCallback(() => {
+    setSteps([]);
+    setConversations([]);
+    setSubagents([]);
+    setTasks([]);
+    setArtifacts([]);
+    setPorts([]);
+    setTelemetry(null);
+    setMachineName('');
+    setUserProfile(null);
+    setActiveConfirmation(null);
+    setCommandOutput(null);
+    setIsAgentWorking(false);
+    setPromptQueue([]);
+    setIsPairingRequired(false);
+    setIsPinRequired(false);
+    setLatencyMs(0);
+  }, []);
+
 
   const connect = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -212,6 +239,9 @@ export function useAntilink() {
               if (msg.data.activeConfirmation !== undefined) {
                 setActiveConfirmation(msg.data.activeConfirmation);
               }
+              if (msg.data.userProfile) {
+                setUserProfile(msg.data.userProfile);
+              }
               if (pingStartRef.current > 0) {
                 setLatencyMs(Math.round(performance.now() - pingStartRef.current));
               }
@@ -286,6 +316,11 @@ export function useAntilink() {
             case 'COMMAND_OUTPUT':
               setCommandOutput({ output: msg.output, exitCode: msg.exitCode });
               break;
+
+            case 'SESSION_ENDED':
+              setStatus('disconnected');
+              resetState();
+              break;
           }
         } catch {
           // ignore
@@ -295,9 +330,10 @@ export function useAntilink() {
       ws.onclose = () => {
         setStatus('disconnected');
         socketRef.current = null;
+        resetState();
         reconnectTimeoutRef.current = setTimeout(() => {
           connect();
-        }, 2000);
+        }, 3000);
       };
 
       ws.onerror = () => {
@@ -306,7 +342,7 @@ export function useAntilink() {
     } catch {
       setStatus('disconnected');
     }
-  }, []);
+  }, [resetState]);
 
   useEffect(() => {
     connect();
@@ -472,18 +508,20 @@ export function useAntilink() {
   );
 
   const disconnect = useCallback(() => {
+    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
     if (socketRef.current) {
       socketRef.current.close();
+      socketRef.current = null;
     }
+    resetState();
     setStatus('disconnected');
-    setIsPairingRequired(false);
-    setIsPinRequired(false);
-  }, []);
+  }, [resetState]);
 
   return {
     status,
     latencyMs,
     machineName,
+    userProfile,
     tunnelUrl,
     ports,
     telemetry,

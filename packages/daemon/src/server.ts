@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as url from 'node:url';
 import * as crypto from 'node:crypto';
-import { exec } from 'node:child_process';
+import { exec, execSync } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import type {
   AntilinkClientMessage,
@@ -108,6 +108,14 @@ export class AntilinkDaemonServer {
   }
 
   public stop(): void {
+    try {
+      this.broadcast({
+        type: 'SESSION_ENDED',
+        reason: 'Host terminal session closed',
+      });
+    } catch {
+      // ignore
+    }
     this.caffeinate.stop();
     this.agentBridge.stop();
     this.wss.close();
@@ -748,6 +756,32 @@ end tell
     }, 5000);
   }
 
+  private getUserProfile(): { userName: string; userEmail: string; assistantName: string } {
+    let userName = 'Operator';
+    let userEmail = '';
+    try {
+      const gitName = execSync('git config user.name', { encoding: 'utf8' }).trim();
+      if (gitName) userName = gitName;
+    } catch {
+      try {
+        userName = os.userInfo().username || 'Operator';
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      const gitEmail = execSync('git config user.email', { encoding: 'utf8' }).trim();
+      if (gitEmail) userEmail = gitEmail;
+    } catch {
+      // ignore
+    }
+    return {
+      userName,
+      userEmail,
+      assistantName: 'Luna',
+    };
+  }
+
   private getInitialState(): AntilinkInitialState {
     const telem = this.telemetry.getTelemetry(this.caffeinate.getStatus());
     return {
@@ -766,6 +800,7 @@ end tell
       isAgentWorking: this.agentBridge.isAgentWorking(),
       promptQueue: this.promptQueue,
       activeConfirmation: this.agentBridge.getActiveConfirmation(),
+      userProfile: this.getUserProfile(),
     };
   }
 
