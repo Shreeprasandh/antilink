@@ -224,6 +224,15 @@ export const LegalModal: React.FC<LegalModalProps> = ({
                   <li><span className="text-palenight-fg">VS Code Material Theme:</span> Palenight Palette by Mattia Astorino</li>
                 </ul>
               </div>
+
+              <div className="space-y-2 border-t border-palenight-border/60 pt-3">
+                <h3 className="font-bold text-palenight-mauve text-xs font-mono">
+                  Trademark & Non-Affiliation Notice
+                </h3>
+                <p className="text-[11px] text-palenight-muted leading-relaxed">
+                  Google, Google Antigravity, ngrok, and Cloudflare are trademarks or registered trademarks of their respective holders (including Google LLC, ngrok LLC, and Cloudflare, Inc.). Use of them does not imply any affiliation with, sponsorship of, or endorsement by them. Antilink is an independent open-source developer companion tool.
+                </p>
+              </div>
             </div>
           )}
         </div>
