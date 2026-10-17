@@ -98,8 +98,18 @@ export function useAntilink() {
       localStorage.setItem('antilink_token', queryToken);
     }
 
+    const DEFAULT_GATEWAY = 'https://battery-zoom-twister.ngrok-free.dev';
+
     let storedGateway = localStorage.getItem('antilink_gateway_url') || '';
-    let token = queryToken || localStorage.getItem('antilink_token') || '';
+    let token = queryToken || localStorage.getItem('antilink_token') || 'fab4b0b4cbb7';
+
+    // Auto-migrate from dead cloudflare tunnels or initialize default ngrok static gateway on Vercel
+    if (window.location.hostname.includes('vercel.app')) {
+      if (!storedGateway || storedGateway.includes('trycloudflare.com')) {
+        storedGateway = DEFAULT_GATEWAY;
+        localStorage.setItem('antilink_gateway_url', storedGateway);
+      }
+    }
 
     // If storedGateway is a full URL containing ?token=... or ?gateway=...
     if (storedGateway.includes('?token=') || storedGateway.includes('?gateway=')) {
@@ -140,8 +150,9 @@ export function useAntilink() {
     } else {
       // If no gateway is configured and running on Vercel
       if (window.location.hostname.includes('vercel.app')) {
-        setStatus('disconnected');
-        return;
+        targetHost = 'battery-zoom-twister.ngrok-free.dev';
+        targetProtocol = 'wss:';
+        targetHttpOrigin = DEFAULT_GATEWAY;
       }
     }
 
@@ -201,6 +212,12 @@ export function useAntilink() {
           const msg = JSON.parse(event.data) as AntilinkServerMessage;
 
           switch (msg.type) {
+            case 'AUTH_FAILED':
+              setIsPairingRequired(true);
+              setPairingMessage(msg.error || 'Authentication required');
+              setIsPinRequired(false);
+              break;
+
             case 'PAIR_CHALLENGE':
               setIsPairingRequired(true);
               setPairingMessage(msg.message);

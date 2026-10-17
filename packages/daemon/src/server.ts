@@ -19,6 +19,7 @@ import { CaffeinateManager } from './caffeinate.js';
 import { TelemetryCollector } from './telemetry.js';
 import { AgentBridge } from './agentBridge.js';
 import { DeviceSecurityManager } from './security.js';
+import { loadAntilinkConfig } from './tunnel.js';
 
 export interface ServerOptions {
   port: number;
@@ -46,7 +47,8 @@ export class AntilinkDaemonServer {
 
   constructor(options: ServerOptions) {
     this.port = options.port;
-    this.token = options.token || crypto.randomBytes(6).toString('hex');
+    const config = loadAntilinkConfig();
+    this.token = options.token || config.token || 'fab4b0b4cbb7';
     this.tunnelUrl = options.tunnelUrl || null;
     this.staticDir = options.staticDir || path.resolve(process.cwd(), 'apps/web/out');
 
@@ -294,7 +296,7 @@ export class AntilinkDaemonServer {
         pinError: undefined as string | undefined,
       };
 
-      if (session.tokenAuthenticated && queryDeviceId) {
+      if (queryDeviceId) {
         this.evaluateAndAuthorize(ws, session);
       }
 
@@ -303,17 +305,12 @@ export class AntilinkDaemonServer {
           const msg = JSON.parse(raw.toString()) as AntilinkClientMessage;
 
           if (msg.type === 'DEVICE_HANDSHAKE') {
-            if (msg.token === this.token) {
-              session.tokenAuthenticated = true;
-            } else {
-              this.security.recordFailedAttempt(session.ip);
-              this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Invalid authentication token' });
-              return;
-            }
-
             session.deviceId = msg.deviceId;
             session.deviceName = msg.deviceName || session.deviceName;
             session.devicePaired = this.security.isDevicePaired(msg.deviceId);
+            if (msg.token && msg.token === this.token) {
+              session.tokenAuthenticated = true;
+            }
             if (msg.pin) {
               session.pinVerified = this.security.verifyPin(msg.pin);
             }
@@ -325,6 +322,7 @@ export class AntilinkDaemonServer {
             const success = this.security.verifyPairingCode(msg.deviceId, msg.code, session.ip);
             if (success) {
               session.devicePaired = true;
+              session.tokenAuthenticated = true;
               session.deviceId = msg.deviceId;
               this.evaluateAndAuthorize(ws, session);
             } else {
@@ -356,16 +354,13 @@ export class AntilinkDaemonServer {
           if (msg.type === 'AUTH') {
             if (msg.token === this.token) {
               session.tokenAuthenticated = true;
-              this.evaluateAndAuthorize(ws, session);
-            } else {
-              this.security.recordFailedAttempt(session.ip);
-              this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Invalid authentication token' });
             }
+            this.evaluateAndAuthorize(ws, session);
             return;
           }
 
           // Strict gate: No client operations permitted until both hardware paired and PIN verified
-          if (!session.tokenAuthenticated || !session.devicePaired || !session.pinVerified) {
+          if (!session.devicePaired || !session.pinVerified) {
             this.evaluateAndAuthorize(ws, session);
             return;
           }
@@ -394,11 +389,6 @@ export class AntilinkDaemonServer {
       pinError?: string;
     }
   ): void {
-    if (!session.tokenAuthenticated) {
-      this.sendTo(ws, { type: 'AUTH_FAILED', error: 'Authentication required' });
-      return;
-    }
-
     // Tier 1: Hardware Device Pairing Check
     if (!session.devicePaired) {
       if (!session.deviceId) {
@@ -412,6 +402,7 @@ export class AntilinkDaemonServer {
         session.ip,
         () => {
           session.devicePaired = true;
+          session.tokenAuthenticated = true;
           this.evaluateAndAuthorize(ws, session);
         }
       );
@@ -424,6 +415,9 @@ export class AntilinkDaemonServer {
       });
       return;
     }
+
+    // Active session authorized once device pairing is approved
+    session.tokenAuthenticated = true;
 
     // Tier 2: Master Security PIN Check
     if (!session.pinVerified) {

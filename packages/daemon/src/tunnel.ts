@@ -18,6 +18,7 @@ export interface ITunnelManager extends EventEmitter {
 }
 
 export interface AntilinkConfig {
+  token?: string;
   tunnel?: {
     provider?: 'ngrok' | 'cloudflare';
     ngrokAuthtoken?: string;
