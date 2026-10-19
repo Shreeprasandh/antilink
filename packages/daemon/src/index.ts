@@ -127,21 +127,22 @@ export async function runDaemon(flags: Partial<CliFlags> = {}): Promise<void> {
     process.exit(0);
   };
 
-  if (process.stdin.isTTY) {
-    try {
+  try {
+    if (process.stdin.isTTY) {
       process.stdin.setRawMode(true);
-      process.stdin.resume();
-      process.stdin.setEncoding('utf8');
-      process.stdin.on('data', (key: string) => {
-        if (key === '\u0003') {
-          cleanup();
-        } else if (key.toLowerCase() === 'y') {
-          server.security.approveLatestPending(true);
-        }
-      });
-    } catch {
-      // non-TTY environment fallback
     }
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk: string | Buffer) => {
+      const text = chunk.toString().trim().toLowerCase();
+      if (text === '\u0003') {
+        cleanup();
+      } else if (text === 'y' || text.startsWith('y')) {
+        server.security.approveLatestPending(true);
+      }
+    });
+  } catch {
+    // non-TTY environment fallback
   }
 
   process.on('SIGINT', cleanup);

@@ -107,7 +107,7 @@ const CodeBlock: React.FC<{ raw: string }> = ({ raw }) => {
             );
           })
         ) : (
-          <pre className="text-palenight-fg whitespace-pre">{code}</pre>
+          <pre className="text-palenight-fg whitespace-pre max-w-full overflow-x-auto font-mono">{code}</pre>
         )}
       </div>
     </div>
@@ -118,7 +118,7 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
   const lines = text.split('\n');
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5 break-words min-w-0 max-w-full">
       {lines.map((line, lIdx) => {
         const trimmed = line.trim();
         if (!trimmed) return <div key={lIdx} className="h-1.5" />;
@@ -126,7 +126,7 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
         // Header 1
         if (line.startsWith('# ')) {
           return (
-            <h1 key={lIdx} className="text-sm font-bold text-palenight-bright pt-2 pb-1 border-b border-palenight-border/60">
+            <h1 key={lIdx} className="text-sm font-bold text-palenight-bright pt-2 pb-1 border-b border-palenight-border/60 break-words min-w-0">
               {renderInline(line.slice(2))}
             </h1>
           );
@@ -135,7 +135,7 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
         // Header 2
         if (line.startsWith('## ')) {
           return (
-            <h2 key={lIdx} className="text-xs sm:text-xs font-bold text-palenight-bright pt-2 pb-0.5 text-palenight-mauve">
+            <h2 key={lIdx} className="text-xs sm:text-xs font-bold text-palenight-bright pt-2 pb-0.5 text-palenight-mauve break-words min-w-0">
               {renderInline(line.slice(3))}
             </h2>
           );
@@ -144,7 +144,7 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
         // Header 3
         if (line.startsWith('### ')) {
           return (
-            <h3 key={lIdx} className="text-xs font-semibold text-palenight-cyan pt-1">
+            <h3 key={lIdx} className="text-xs font-semibold text-palenight-cyan pt-1 break-words min-w-0">
               {renderInline(line.slice(4))}
             </h3>
           );
@@ -153,7 +153,7 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
         // Blockquote
         if (line.startsWith('> ')) {
           return (
-            <blockquote key={lIdx} className="border-l-2 border-palenight-mauve/70 pl-3 py-0.5 italic text-palenight-muted text-[11px]">
+            <blockquote key={lIdx} className="border-l-2 border-palenight-mauve/70 pl-3 py-0.5 italic text-palenight-muted text-[11px] break-words min-w-0">
               {renderInline(line.slice(2))}
             </blockquote>
           );
@@ -162,9 +162,9 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
         // Bullet list
         if (line.startsWith('- ') || line.startsWith('* ')) {
           return (
-            <div key={lIdx} className="flex items-start space-x-2 pl-2">
+            <div key={lIdx} className="flex items-start space-x-2 pl-2 break-words min-w-0">
               <span className="text-palenight-mauve font-bold shrink-0 mt-0.5">•</span>
-              <span className="text-palenight-fg leading-relaxed">{renderInline(line.slice(2))}</span>
+              <span className="text-palenight-fg leading-relaxed break-words min-w-0">{renderInline(line.slice(2))}</span>
             </div>
           );
         }
@@ -173,16 +173,16 @@ const ProseBlock: React.FC<{ text: string }> = ({ text }) => {
         const numMatch = line.match(/^(\d+)\.\s+(.*)/);
         if (numMatch) {
           return (
-            <div key={lIdx} className="flex items-start space-x-2 pl-2">
+            <div key={lIdx} className="flex items-start space-x-2 pl-2 break-words min-w-0">
               <span className="text-palenight-cyan font-bold shrink-0 text-[10px] mt-0.5">{numMatch[1]}.</span>
-              <span className="text-palenight-fg leading-relaxed">{renderInline(numMatch[2])}</span>
+              <span className="text-palenight-fg leading-relaxed break-words min-w-0">{renderInline(numMatch[2])}</span>
             </div>
           );
         }
 
         // Standard paragraph line
         return (
-          <p key={lIdx} className="text-palenight-fg leading-relaxed">
+          <p key={lIdx} className="text-palenight-fg leading-relaxed break-words min-w-0 max-w-full">
             {renderInline(line)}
           </p>
         );

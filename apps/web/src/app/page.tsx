@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAntilink } from '@/hooks/useAntilink';
+import { useWakeLock } from '@/hooks/useWakeLock';
 import { Header } from '@/components/Header';
 import { ActivityBar, ActiveTab } from '@/components/ActivityBar';
 import { AgentStream } from '@/components/AgentStream';
@@ -29,10 +30,13 @@ export default function AntilinkApp() {
   const [assistantName, setAssistantName] = useState('Luna');
   const [userEmail, setUserEmail] = useState('');
 
+  const { isLocked: isScreenWakeActive } = useWakeLock();
+
   const {
     status,
     latencyMs,
     machineName,
+    projectName,
     userProfile,
     tunnelUrl,
     ports,
@@ -41,6 +45,7 @@ export default function AntilinkApp() {
     activeConfirmation,
     commandOutput,
     isAgentWorking,
+    activity,
     promptQueue,
     activeConversationId,
     activeConversationTitle,
@@ -88,6 +93,13 @@ export default function AntilinkApp() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (isPairingRequired || isPinRequired) {
+      setIsGatewayModalOpen(false);
+      setIsSettingsOpen(false);
+    }
+  }, [isPairingRequired, isPinRequired]);
 
   const handleSaveSettings = (settings: { userName: string; assistantName: string; userEmail: string }) => {
     setUserName(settings.userName);
@@ -160,6 +172,8 @@ export default function AntilinkApp() {
         status={status}
         latencyMs={latencyMs}
         machineName={machineName}
+        projectName={projectName}
+        isScreenWakeActive={isScreenWakeActive}
         activeConversationTitle={activeConversationTitle}
         tunnelUrl={tunnelUrl}
         telemetry={telemetry}
@@ -174,7 +188,7 @@ export default function AntilinkApp() {
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-w-0">
         {/* Desktop Left Activity Bar */}
         <div className="hidden md:block">
           <ActivityBar
@@ -186,18 +200,22 @@ export default function AntilinkApp() {
         </div>
 
         {/* Dynamic Center Stage Panel - Persistent DOM preserves scroll and state across tab switches */}
-        <main className="flex-1 flex flex-col overflow-hidden relative">
-          <div className={`h-full w-full flex flex-col ${activeTab === 'stream' ? '' : 'hidden'}`}>
+        <main className="flex-1 flex flex-col overflow-hidden relative min-w-0">
+          <div className={`h-full w-full flex flex-col min-w-0 ${activeTab === 'stream' ? '' : 'hidden'}`}>
             <AgentStream
               isActive={activeTab === 'stream'}
               gatewayUrl={gatewayUrl}
               steps={steps}
               activeConfirmation={activeConfirmation}
               activeConversationTitle={activeConversationTitle}
+              activeConversationId={activeConversationId}
+              isHistoricalSession={Boolean(activeConversationId && conversations.length > 0 && !conversations.find((c) => c.id === activeConversationId)?.isActive)}
               remoteControlUrl={remoteControlUrl}
               userName={userName}
               assistantName={assistantName}
               isAgentWorking={isAgentWorking}
+              activity={activity}
+              projectName={projectName}
               promptQueue={promptQueue}
               onCancelQueuedPrompt={cancelQueuedPrompt}
               onConfirmTool={confirmTool}

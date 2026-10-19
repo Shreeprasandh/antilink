@@ -82,7 +82,66 @@ export class AntilinkDaemonServer {
     return this.port;
   }
 
+  private lockFilePath: string = path.join(process.cwd(), '.antilink.lock');
+
+  private acquireProjectLock(): void {
+    try {
+      if (fs.existsSync(this.lockFilePath)) {
+        try {
+          const lockData = JSON.parse(fs.readFileSync(this.lockFilePath, 'utf8'));
+          if (lockData.pid && lockData.pid !== process.pid) {
+            try {
+              process.kill(lockData.pid, 0);
+              console.log(`[antilink] Notice: existing instance was running on PID ${lockData.pid}. Overriding lock.`);
+            } catch {
+              // Stale lock
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      fs.writeFileSync(
+        this.lockFilePath,
+        JSON.stringify(
+          {
+            pid: process.pid,
+            projectName: path.basename(process.cwd()),
+            cwd: process.cwd(),
+            startedAt: new Date().toISOString(),
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  private releaseProjectLock(): void {
+    try {
+      if (fs.existsSync(this.lockFilePath)) {
+        fs.unlinkSync(this.lockFilePath);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   public async start(): Promise<void> {
+    this.acquireProjectLock();
+    process.on('exit', () => this.releaseProjectLock());
+    process.on('SIGINT', () => {
+      this.releaseProjectLock();
+      process.exit(0);
+    });
+    process.on('SIGTERM', () => {
+      this.releaseProjectLock();
+      process.exit(0);
+    });
+
     this.agentBridge.init();
     await this.portScanner.scan();
 
@@ -110,6 +169,7 @@ export class AntilinkDaemonServer {
   }
 
   public stop(): void {
+    this.releaseProjectLock();
     try {
       this.broadcast({
         type: 'SESSION_ENDED',
@@ -568,6 +628,9 @@ export class AntilinkDaemonServer {
           this.persistAllowedCommand(payload.commandLine);
         }
 
+        // Immediately resolve confirmation on agentBridge to update all connected devices
+        this.agentBridge.resolveConfirmation(payload.stepIdx);
+
         // 1. Inject option number into the active terminal
         this.injectKeystrokeToTerminal(choice, true);
 
@@ -607,42 +670,143 @@ export class AntilinkDaemonServer {
     }
   }
 
+  private getActiveTerminalApp(): string | null {
+    try {
+      // 1. Find agy process PID using ps (macOS BSD pgrep often misses scripts/wrappers)
+      const psOut = execSync("ps -eo pid,ppid,tty,command | grep -E '\\s+agy(\\s|$)' | grep -v grep", {
+        encoding: 'utf-8',
+      }).trim();
+
+      if (psOut) {
+        const lines = psOut.split('\n');
+        const firstLine = lines[0].trim();
+        const [pidStr] = firstLine.split(/\s+/);
+        const pid = parseInt(pidStr, 10);
+        if (!isNaN(pid)) {
+          let curr = pid;
+          for (let i = 0; i < 8; i++) {
+            const parentLine = execSync(`ps -o ppid=,command= -p ${curr} 2>/dev/null || true`, {
+              encoding: 'utf-8',
+            }).trim();
+            if (!parentLine) break;
+            const parts = parentLine.split(/\s+/);
+            const ppid = parseInt(parts[0], 10);
+            const cmd = parentLine.slice(parts[0].length).trim();
+
+            if (
+              cmd.includes('Visual Studio Code') ||
+              cmd.includes('Code Helper') ||
+              cmd.includes('/Code.app') ||
+              (cmd.includes('Electron.app') && cmd.includes('Code'))
+            ) {
+              return 'Visual Studio Code';
+            }
+            if (cmd.includes('Cursor') || cmd.includes('/Cursor.app')) {
+              return 'Cursor';
+            }
+            if (cmd.includes('iTerm') || cmd.includes('iTerm2')) {
+              return 'iTerm2';
+            }
+            if (cmd.includes('Ghostty')) {
+              return 'Ghostty';
+            }
+            if (cmd.includes('Terminal.app') || cmd.includes('/Terminal')) {
+              return 'Terminal';
+            }
+            if (cmd.includes('kitty')) {
+              return 'kitty';
+            }
+            if (cmd.includes('Alacritty')) {
+              return 'Alacritty';
+            }
+
+            if (isNaN(ppid) || ppid <= 1) break;
+            curr = ppid;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Secondary fallback: check currently running GUI terminal/IDE applications via System Events
+    try {
+      const runningApps = execSync(
+        `osascript -e 'tell application "System Events" to get name of every application process whose background only is false'`,
+        { encoding: 'utf-8' }
+      );
+      if (runningApps.includes('Code')) return 'Visual Studio Code';
+      if (runningApps.includes('Cursor')) return 'Cursor';
+      if (runningApps.includes('iTerm2')) return 'iTerm2';
+      if (runningApps.includes('Ghostty')) return 'Ghostty';
+      if (runningApps.includes('Terminal')) return 'Terminal';
+    } catch {
+      // ignore
+    }
+
+    return null;
+  }
+
   private injectKeystrokeToTerminal(text: string, hitReturn: boolean = true): void {
     try {
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      // Direct menu click 'View > Terminal' focuses the terminal without popping command palettes or searching
-      const script = `osascript -e '
+      const termApp = this.getActiveTerminalApp();
+      if (!termApp) {
+        console.warn('[Antilink] Warning: No active terminal or IDE detected to inject keystroke.');
+        this.broadcast({
+          type: 'COMMAND_OUTPUT',
+          output: `[Antilink] Notice: Could not detect active host terminal window for keystroke injection.`,
+          exitCode: 1,
+        });
+        return;
+      }
+
+      let script = '';
+      if (termApp === 'Visual Studio Code') {
+        script = `osascript -e '
+tell application "Visual Studio Code" to activate
+delay 0.12
 tell application "System Events"
-  set prevApp to ""
-  try
-    set prevApp to name of first process whose frontmost is true
-  end try
-  tell application "Visual Studio Code" to activate
-  delay 0.1
   tell process "Code"
-    try
-      click menu item "Terminal" of menu "View" of menu bar 1
-    end try
-    delay 0.1
     keystroke "${escaped}"
     ${hitReturn ? 'delay 0.05\nkey code 36' : ''}
   end tell
-  delay 0.08
-  if prevApp is not "" and prevApp is not "Code" and prevApp is not "Visual Studio Code" then
-    try
-      tell application prevApp to activate
-    end try
-  end if
 end tell
 '`;
+      } else if (termApp === 'Cursor') {
+        script = `osascript -e '
+tell application "Cursor" to activate
+delay 0.12
+tell application "System Events"
+  tell process "Cursor"
+    keystroke "${escaped}"
+    ${hitReturn ? 'delay 0.05\nkey code 36' : ''}
+  end tell
+end tell
+'`;
+      } else {
+        script = `osascript -e '
+tell application "${termApp}" to activate
+delay 0.12
+tell application "System Events"
+  keystroke "${escaped}"
+  ${hitReturn ? 'delay 0.05\nkey code 36' : ''}
+end tell
+'`;
+      }
+
       exec(script, (err) => {
         if (err) {
-          const fallback = `osascript -e 'tell application "Visual Studio Code" to activate' -e 'delay 0.08' -e 'tell application "System Events" to keystroke "${escaped}"' ${hitReturn ? "-e 'delay 0.05' -e 'tell application \"System Events\" to key code 36'" : ''}`;
-          exec(fallback);
+          console.error('[Antilink] Keystroke injection error:', err.message);
+          this.broadcast({
+            type: 'COMMAND_OUTPUT',
+            output: `[Antilink] Keystroke dispatch failed: ${err.message}`,
+            exitCode: 1,
+          });
         }
       });
-    } catch {
-      // ignore
+    } catch (err: any) {
+      console.error('[Antilink] injectKeystrokeToTerminal exception:', err);
     }
   }
 
@@ -720,6 +884,13 @@ end tell
         isWorking,
       });
     });
+
+    this.agentBridge.on('activity_updated', (activity) => {
+      this.broadcast({
+        type: 'AGENT_ACTIVITY_UPDATED',
+        activity,
+      });
+    });
   }
 
   private setupBackgroundPolling(): void {
@@ -780,6 +951,7 @@ end tell
     const telem = this.telemetry.getTelemetry(this.caffeinate.getStatus());
     return {
       machineName: telem.hostname,
+      projectName: path.basename(process.cwd()),
       activeConversationTitle: this.agentBridge.getActiveConversationTitle(),
       tunnelUrl: this.tunnelUrl,
       localUrl: `http://localhost:${this.port}`,
@@ -792,6 +964,7 @@ end tell
       artifacts: this.agentBridge.getArtifacts(),
       recentSteps: this.agentBridge.getRecentSteps(),
       isAgentWorking: this.agentBridge.isAgentWorking(),
+      activity: this.agentBridge.getLiveActivity(),
       promptQueue: this.promptQueue,
       activeConfirmation: this.agentBridge.getActiveConfirmation(),
       userProfile: this.getUserProfile(),

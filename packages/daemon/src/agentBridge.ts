@@ -11,6 +11,7 @@ import type {
   SubagentInfo,
   BackgroundTaskInfo,
   ArtifactInfo,
+  AgentActivityState,
 } from '@antilink/shared';
 
 export class AgentBridge extends EventEmitter {
@@ -26,6 +27,7 @@ export class AgentBridge extends EventEmitter {
   private pollInterval: NodeJS.Timeout | null = null;
   private recentSteps: AgentStep[] = [];
   private wasWorking: boolean = false;
+  private lastStepTimestamp: number = Date.now();
 
   constructor() {
     super();
@@ -38,9 +40,11 @@ export class AgentBridge extends EventEmitter {
     this.discoverActiveConversation();
     this.initCliLogState();
     this.wasWorking = this.isAgentWorking();
+    this.emitActivityUpdated();
     this.pollInterval = setInterval(() => {
       this.checkAndReadTranscript();
       this.checkCliLog();
+      this.checkPendingToolConfirmation();
       this.checkWorkingState();
     }, 300);
   }
@@ -62,8 +66,10 @@ export class AgentBridge extends EventEmitter {
 
   public notifyAgentStarted(): void {
     this.wasWorking = true;
+    this.lastStepTimestamp = Date.now();
     this.emit('agent_status_changed', true);
     this.emit('agent_busy');
+    this.emitActivityUpdated();
   }
 
   public isAgentWorking(): boolean {
@@ -128,6 +134,7 @@ export class AgentBridge extends EventEmitter {
       } else {
         this.emit('agent_busy');
       }
+      this.emitActivityUpdated();
     }
   }
 
@@ -375,6 +382,18 @@ export class AgentBridge extends EventEmitter {
   }
 
   private discoverActiveConversation(): void {
+    const envConv = process.env.CONVERSATION_ID || process.env.ACTIVE_CONVERSATION_ID;
+    if (envConv) {
+      const directTranscript = path.join(this.brainDir, envConv, '.system_generated', 'logs', 'transcript.jsonl');
+      if (fs.existsSync(directTranscript)) {
+        this.activeConversationId = envConv;
+        this.transcriptPath = directTranscript;
+        this.setupWatcher(directTranscript);
+        this.readFullTranscript(directTranscript);
+        return;
+      }
+    }
+
     if (!fs.existsSync(this.brainDir)) return;
 
     try {
@@ -388,14 +407,14 @@ export class AgentBridge extends EventEmitter {
         })
         .sort((a, b) => b.mtime - a.mtime);
 
-      if (dirs.length > 0) {
-        const latest = dirs[0];
-        const transcript = path.join(latest.path, '.system_generated', 'logs', 'transcript.jsonl');
+      for (const candidate of dirs) {
+        const transcript = path.join(candidate.path, '.system_generated', 'logs', 'transcript.jsonl');
         if (fs.existsSync(transcript)) {
-          this.activeConversationId = latest.id;
+          this.activeConversationId = candidate.id;
           this.transcriptPath = transcript;
           this.setupWatcher(transcript);
           this.readFullTranscript(transcript);
+          break;
         }
       }
     } catch {
@@ -479,28 +498,15 @@ export class AgentBridge extends EventEmitter {
               if (step) {
                 this.recentSteps.push(step);
                 if (this.recentSteps.length > 60) this.recentSteps.shift();
+                this.lastStepTimestamp = Date.now();
                 this.emit('step_added', step);
-
-                if (step.toolCalls && step.toolCalls.length > 0) {
-                  for (const tool of step.toolCalls) {
-                    if (tool.isConfirmationRequired) {
-                      const payload: ToolConfirmationPayload = {
-                        conversationId: this.activeConversationId || '',
-                        stepIdx: step.stepIndex,
-                        toolName: tool.name,
-                        commandLine: (tool.args.CommandLine as string) || undefined,
-                        targetFile: (tool.args.TargetFile as string) || undefined,
-                        args: tool.args,
-                      };
-                      this.emit('tool_confirmation', payload);
-                    }
-                  }
-                }
+                this.emitActivityUpdated();
               }
             } catch {
               // ignore
             }
           }
+          this.checkPendingToolConfirmation();
           this.checkWorkingState();
         });
       }
@@ -509,42 +515,89 @@ export class AgentBridge extends EventEmitter {
     }
   }
 
+  private isCommandAllowed(cmd: string): boolean {
+    if (!cmd) return false;
+    try {
+      const settingsPath = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
+      if (fs.existsSync(settingsPath)) {
+        const raw = fs.readFileSync(settingsPath, 'utf8');
+        const data = JSON.parse(raw);
+        const allows: string[] = data?.permissions?.allow || [];
+        for (const rule of allows) {
+          const match = rule.match(/^command\((.*)\)$/);
+          if (match && match[1]) {
+            const prefix = match[1].trim();
+            if (cmd.startsWith(prefix) || cmd.includes(prefix)) {
+              return true;
+            }
+          }
+        }
+      }
+    } catch {
+      // fallback
+    }
+    return false;
+  }
+
+  private checkPendingToolConfirmation(): void {
+    if (!this.activeConversationId || this.recentSteps.length === 0) return;
+    const lastStep = this.recentSteps[this.recentSteps.length - 1];
+
+    // If latest step is a PLANNER_RESPONSE with tool calls and agent is currently running
+    if (
+      lastStep.type === 'PLANNER_RESPONSE' &&
+      lastStep.toolCalls &&
+      lastStep.toolCalls.length > 0 &&
+      this.isAgentWorking()
+    ) {
+      const tool = lastStep.toolCalls[0];
+      const isSensitiveTool =
+        tool.isConfirmationRequired ||
+        tool.name === 'run_command' ||
+        tool.name === 'ask_question';
+
+      let isAllowed = false;
+      if (tool.name === 'run_command') {
+        const rawCmd = (tool.args.CommandLine as string) || (tool.args.command as string) || '';
+        isAllowed = this.isCommandAllowed(rawCmd);
+      }
+
+      if (isSensitiveTool && !isAllowed) {
+        if (!this.activeConfirmation || this.activeConfirmation.stepIdx !== lastStep.stepIndex) {
+          const payload = this.buildConfirmationPayload(tool.name, lastStep.stepIndex);
+          this.activeConfirmation = payload;
+          this.emit('tool_confirmation', payload);
+          this.emitActivityUpdated();
+        }
+        return;
+      }
+    }
+
+    // Auto-resolve when a GENERIC step or higher step index arrives
+    if (this.activeConfirmation) {
+      if (lastStep.stepIndex > this.activeConfirmation.stepIdx || !this.isAgentWorking()) {
+        const stepIdx = this.activeConfirmation.stepIdx;
+        this.activeConfirmation = null;
+        this.emit('tool_confirmation_resolved', { stepIdx });
+        this.emitActivityUpdated();
+      }
+    }
+  }
+
+  public resolveConfirmation(stepIdx?: number): void {
+    if (this.activeConfirmation && (!stepIdx || this.activeConfirmation.stepIdx === stepIdx)) {
+      const idx = this.activeConfirmation.stepIdx;
+      this.activeConfirmation = null;
+      this.emit('tool_confirmation_resolved', { stepIdx: idx });
+      this.emitActivityUpdated();
+    }
+  }
+
   private initCliLogState(): void {
     try {
       if (!fs.existsSync(this.cliLogPath)) return;
       const stat = fs.statSync(this.cliLogPath);
       this.lastCliLogBytes = stat.size;
-
-      // Read last 16KB to check if there is an in-flight confirmation waiting for user approval
-      const start = Math.max(0, stat.size - 16384);
-      const fd = fs.openSync(this.cliLogPath, 'r');
-      const buffer = Buffer.alloc(stat.size - start);
-      fs.readSync(fd, buffer, 0, buffer.length, start);
-      fs.closeSync(fd);
-
-      const content = buffer.toString('utf-8');
-      const lines = content.split('\n');
-
-      let lastSurface: { toolName: string; stepIdx: number } | null = null;
-      let lastResponseStepIdx = -1;
-
-      for (const line of lines) {
-        const surfaceMatch = line.match(/Surfacing tool confirmation:\s*"([^"]+)"\s*at step\s*(\d+)/);
-        if (surfaceMatch) {
-          lastSurface = {
-            toolName: surfaceMatch[1],
-            stepIdx: parseInt(surfaceMatch[2], 10),
-          };
-        }
-        const respMatch = line.match(/Responding to tool confirmation:\s*convID=([^,]+),\s*stepIdx=(\d+)/);
-        if (respMatch) {
-          lastResponseStepIdx = parseInt(respMatch[2], 10);
-        }
-      }
-
-      if (lastSurface && lastSurface.stepIdx > lastResponseStepIdx) {
-        this.activeConfirmation = this.buildConfirmationPayload(lastSurface.toolName, lastSurface.stepIdx);
-      }
     } catch {
       // ignore
     }
@@ -570,27 +623,100 @@ export class AgentBridge extends EventEmitter {
       const lines = chunk.split('\n');
 
       for (const line of lines) {
-        const surfaceMatch = line.match(/Surfacing tool confirmation:\s*"([^"]+)"\s*at step\s*(\d+)/);
-        if (surfaceMatch) {
-          const toolName = surfaceMatch[1];
-          const stepIdx = parseInt(surfaceMatch[2], 10);
-          const payload = this.buildConfirmationPayload(toolName, stepIdx);
-          this.activeConfirmation = payload;
-          this.emit('tool_confirmation', payload);
-        }
+        const confirmMatch =
+          line.match(/Tool confirmation for conversation [^\s]+ step (\d+)/i) ||
+          line.match(/auto-approving [^\s]+ at step (\d+)/i) ||
+          line.match(/Responding to tool confirmation:\s*convID=[^,]+,\s*stepIdx=(\d+)/i);
 
-        const respMatch = line.match(/Responding to tool confirmation:\s*convID=([^,]+),\s*stepIdx=(\d+)/);
-        if (respMatch) {
-          const stepIdx = parseInt(respMatch[2], 10);
-          if (this.activeConfirmation && this.activeConfirmation.stepIdx === stepIdx) {
+        if (confirmMatch) {
+          const stepIdx = parseInt(confirmMatch[1], 10);
+          if (
+            this.activeConfirmation &&
+            (this.activeConfirmation.stepIdx === stepIdx || this.activeConfirmation.stepIdx <= stepIdx)
+          ) {
             this.activeConfirmation = null;
+            this.emit('tool_confirmation_resolved', { stepIdx });
+            this.emitActivityUpdated();
           }
-          this.emit('tool_confirmation_resolved', { stepIdx });
         }
       }
     } catch {
       // ignore
     }
+  }
+
+  public getLiveActivity(): AgentActivityState {
+    const isWorking = this.isAgentWorking();
+    let currentAction = isWorking ? 'Working...' : 'Ready for instructions';
+    let currentThought: string | undefined = undefined;
+    let currentTool: string | undefined = undefined;
+    let toolSummary: string | undefined = undefined;
+    let toolAction: string | undefined = undefined;
+    let stepIndex: number | undefined = undefined;
+
+    if (this.recentSteps.length > 0) {
+      const lastStep = this.recentSteps[this.recentSteps.length - 1];
+      stepIndex = lastStep.stepIndex;
+
+      if (lastStep.thinking) {
+        const cleaned = lastStep.thinking.replace(/[\r\n]+/g, ' ').trim();
+        currentThought = cleaned.length > 200 ? cleaned.slice(-200) : cleaned;
+      }
+
+      if (lastStep.toolCalls && lastStep.toolCalls.length > 0) {
+        const tool = lastStep.toolCalls[0];
+        currentTool = tool.name;
+        const args = tool.args || {};
+        if (typeof args.toolSummary === 'string' && args.toolSummary.trim()) {
+          toolSummary = args.toolSummary.trim();
+          currentAction = toolSummary;
+        } else if (typeof args.toolAction === 'string' && args.toolAction.trim()) {
+          toolAction = args.toolAction.trim();
+          currentAction = toolAction;
+        } else if (tool.name === 'view_file') {
+          const f = (args.AbsolutePath as string) || (args.path as string) || '';
+          const base = f ? path.basename(f) : 'file';
+          currentAction = `Reading ${base}`;
+        } else if (tool.name === 'replace_file_content' || tool.name === 'write_to_file') {
+          const f = (args.TargetFile as string) || (args.path as string) || '';
+          const base = f ? path.basename(f) : 'file';
+          currentAction = `Editing ${base}`;
+        } else if (tool.name === 'run_command') {
+          const cmd = ((args.CommandLine as string) || (args.command as string) || '').replace(/^["']|["']$/g, '').trim();
+          const tokens = cmd.split(/\s+/).slice(0, 3).join(' ');
+          currentAction = tokens ? `Running ${tokens}` : 'Running command';
+        } else if (tool.name === 'manage_task') {
+          currentAction = 'Managing task';
+        } else if (tool.name === 'invoke_subagent') {
+          currentAction = 'Invoking subagent';
+        } else {
+          currentAction = `Executing ${tool.name}`;
+        }
+      } else if (lastStep.thinking && isWorking) {
+        currentAction = 'Reasoning & planning';
+      } else if (lastStep.type === 'GENERIC' && isWorking) {
+        currentAction = 'Processing output';
+      }
+    }
+
+    if (!isWorking) {
+      currentAction = 'Ready for instructions';
+    }
+
+    return {
+      isWorking,
+      currentAction,
+      currentThought,
+      currentTool,
+      toolSummary,
+      toolAction,
+      stepIndex,
+    };
+  }
+
+  public emitActivityUpdated(): void {
+    const activity = this.getLiveActivity();
+    this.emit('activity_updated', activity);
   }
 
   private buildConfirmationPayload(toolName: string, stepIdx: number): ToolConfirmationPayload {

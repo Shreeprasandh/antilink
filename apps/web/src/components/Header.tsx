@@ -18,6 +18,8 @@ interface HeaderProps {
   status: 'connecting' | 'connected' | 'disconnected';
   latencyMs: number;
   machineName: string;
+  projectName?: string;
+  isScreenWakeActive?: boolean;
   activeConversationTitle?: string;
   tunnelUrl: string | null;
   telemetry: SystemTelemetry | null;
@@ -35,6 +37,8 @@ export const Header: React.FC<HeaderProps> = ({
   status,
   latencyMs,
   machineName,
+  projectName = '',
+  isScreenWakeActive = false,
   activeConversationTitle,
   tunnelUrl,
   telemetry,
@@ -80,7 +84,12 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="font-bold tracking-wider text-palenight-bright text-xs sm:text-sm font-mono">
             ANTILINK
           </span>
-          <span className="text-[10px] text-palenight-mauve bg-palenight-card border border-palenight-border px-1 py-0.2 rounded font-mono hidden md:inline">
+          {projectName && (
+            <span className="text-[10px] text-palenight-cyan bg-palenight-card border border-palenight-border px-1.5 py-0.2 rounded font-mono hidden md:inline">
+              {projectName}
+            </span>
+          )}
+          <span className="text-[10px] text-palenight-mauve bg-palenight-card border border-palenight-border px-1 py-0.2 rounded font-mono hidden lg:inline">
             PRO
           </span>
         </div>
@@ -131,6 +140,17 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right: Remote Control Link, Wake Lock, Battery & Auxiliary Drawer */}
       <div className="flex items-center space-x-1.5 sm:space-x-2 text-[11px] font-mono">
+        {/* Phone Screen Wake Lock Indicator */}
+        {isScreenWakeActive && (
+          <div
+            className="flex items-center space-x-1 text-palenight-green bg-palenight-card/80 border border-palenight-green/40 px-1.5 py-0.5 rounded text-[10px] hidden sm:flex font-mono select-none"
+            title="Screen Wake Lock Active: phone screen will remain awake"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-palenight-green animate-pulse shrink-0" />
+            <span className="text-[9.5px]">AWAKE</span>
+          </div>
+        )}
+
         {/* Official Google Remote Control Direct Link Button */}
         {isConnected && remoteControlUrl && (
           <a

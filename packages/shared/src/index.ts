@@ -116,6 +116,16 @@ export type AntilinkClientMessage =
   | { type: 'EXEC_COMMAND'; command: string }
   | { type: 'KILL_TASK'; taskId: string };
 
+export interface AgentActivityState {
+  isWorking: boolean;
+  currentAction?: string;
+  currentThought?: string;
+  currentTool?: string;
+  toolSummary?: string;
+  toolAction?: string;
+  stepIndex?: number;
+}
+
 export type AntilinkServerMessage =
   | { type: 'AUTH_SUCCESS'; session: { paired: boolean; machineName: string } }
   | { type: 'AUTH_FAILED'; error: string }
@@ -129,6 +139,7 @@ export type AntilinkServerMessage =
   | { type: 'ARTIFACTS_UPDATED'; artifacts: ArtifactInfo[] }
   | { type: 'AGENT_STEP_ADDED'; step: AgentStep }
   | { type: 'AGENT_STEP_UPDATED'; step: AgentStep }
+  | { type: 'AGENT_ACTIVITY_UPDATED'; activity: AgentActivityState }
   | { type: 'TOOL_CONFIRM_REQUEST'; payload: ToolConfirmationPayload }
   | { type: 'PORTS_UPDATED'; ports: DiscoveredPort[] }
   | { type: 'TELEMETRY_UPDATED'; telemetry: SystemTelemetry }
@@ -141,6 +152,7 @@ export type AntilinkServerMessage =
 
 export interface AntilinkInitialState {
   machineName: string;
+  projectName?: string;
   activeConversationTitle?: string;
   tunnelUrl: string | null;
   localUrl: string;
@@ -153,6 +165,7 @@ export interface AntilinkInitialState {
   artifacts: ArtifactInfo[];
   recentSteps: AgentStep[];
   isAgentWorking?: boolean;
+  activity?: AgentActivityState;
   promptQueue?: QueuedPrompt[];
   activeConfirmation?: ToolConfirmationPayload | null;
   userProfile?: {

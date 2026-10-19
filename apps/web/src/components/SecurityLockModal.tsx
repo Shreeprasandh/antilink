@@ -80,7 +80,7 @@ export const SecurityLockModal: React.FC<SecurityLockModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md select-none font-mono">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md select-none font-mono">
       <div
         className={`relative w-full max-w-sm bg-palenight-card border border-palenight-border rounded-xl shadow-2xl overflow-hidden flex flex-col ${
           isShaking ? 'animate-bounce' : 'animate-in fade-in zoom-in-95 duration-150'

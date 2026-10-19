@@ -13,12 +13,14 @@ import type {
   BackgroundTaskInfo,
   ArtifactInfo,
   QueuedPrompt,
+  AgentActivityState,
 } from '@antilink/shared';
 
 export function useAntilink() {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [latencyMs, setLatencyMs] = useState<number>(0);
   const [machineName, setMachineName] = useState<string>('Localhost');
+  const [projectName, setProjectName] = useState<string>('');
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [ports, setPorts] = useState<DiscoveredPort[]>([]);
   const [telemetry, setTelemetry] = useState<SystemTelemetry | null>(null);
@@ -26,6 +28,7 @@ export function useAntilink() {
   const [activeConfirmation, setActiveConfirmation] = useState<ToolConfirmationPayload | null>(null);
   const [commandOutput, setCommandOutput] = useState<{ output: string; exitCode?: number } | null>(null);
   const [isAgentWorking, setIsAgentWorking] = useState<boolean>(false);
+  const [activity, setActivity] = useState<AgentActivityState | null>(null);
   const [promptQueue, setPromptQueue] = useState<QueuedPrompt[]>([]);
 
   // Full Antigravity Parity states
@@ -69,6 +72,8 @@ export function useAntilink() {
     setActiveConfirmation(null);
     setCommandOutput(null);
     setIsAgentWorking(false);
+    setActivity(null);
+    setProjectName('');
     setPromptQueue([]);
     setIsPairingRequired(false);
     setIsPinRequired(false);
@@ -182,6 +187,18 @@ export function useAntilink() {
       localStorage.getItem('antilink_master_pin') ||
       '';
 
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    if (socketRef.current) {
+      socketRef.current.onclose = null;
+      socketRef.current.onerror = null;
+      socketRef.current.close();
+      socketRef.current = null;
+    }
+
     setGatewayUrl(targetHttpOrigin);
     const wsUrl = `${targetProtocol}//${targetHost}/ws?token=${token}&deviceId=${deviceId}&deviceName=${encodeURIComponent(
       deviceName
@@ -239,6 +256,9 @@ export function useAntilink() {
 
             case 'INITIAL_STATE':
               setMachineName(msg.data.machineName);
+              if (msg.data.projectName) {
+                setProjectName(msg.data.projectName);
+              }
               setTunnelUrl(msg.data.tunnelUrl);
               setPorts(msg.data.ports);
               setTelemetry(msg.data.telemetry);
@@ -252,6 +272,9 @@ export function useAntilink() {
               setTasks(msg.data.tasks || []);
               setArtifacts(msg.data.artifacts || []);
               setIsAgentWorking(Boolean(msg.data.isAgentWorking));
+              if (msg.data.activity) {
+                setActivity(msg.data.activity);
+              }
               setPromptQueue(msg.data.promptQueue || []);
               if (msg.data.activeConfirmation !== undefined) {
                 setActiveConfirmation(msg.data.activeConfirmation);
@@ -261,6 +284,13 @@ export function useAntilink() {
               }
               if (pingStartRef.current > 0) {
                 setLatencyMs(Math.round(performance.now() - pingStartRef.current));
+              }
+              break;
+
+            case 'AGENT_ACTIVITY_UPDATED':
+              setActivity(msg.activity);
+              if (msg.activity.isWorking !== undefined) {
+                setIsAgentWorking(msg.activity.isWorking);
               }
               break;
 
@@ -345,9 +375,24 @@ export function useAntilink() {
       };
 
       ws.onclose = () => {
+        if (socketRef.current && socketRef.current !== ws) return;
         setStatus('disconnected');
         socketRef.current = null;
-        resetState();
+        setSteps([]);
+        setConversations([]);
+        setSubagents([]);
+        setTasks([]);
+        setArtifacts([]);
+        setPorts([]);
+        setTelemetry(null);
+        setMachineName('');
+        setUserProfile(null);
+        setActiveConfirmation(null);
+        setCommandOutput(null);
+        setIsAgentWorking(false);
+        setPromptQueue([]);
+        setLatencyMs(0);
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = setTimeout(() => {
           connect();
         }, 3000);
@@ -485,12 +530,17 @@ export function useAntilink() {
         }
         localStorage.setItem('antilink_gateway_url', targetGateway);
         setGatewayUrl(targetGateway);
-        if (socketRef.current) {
-          socketRef.current.close();
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
         }
-        setTimeout(() => {
-          connect();
-        }, 100);
+        if (socketRef.current) {
+          socketRef.current.onclose = null;
+          socketRef.current.onerror = null;
+          socketRef.current.close();
+          socketRef.current = null;
+        }
+        connect();
       } catch {
         // ignore
       }
@@ -538,6 +588,7 @@ export function useAntilink() {
     status,
     latencyMs,
     machineName,
+    projectName,
     userProfile,
     tunnelUrl,
     ports,
@@ -546,6 +597,7 @@ export function useAntilink() {
     activeConfirmation,
     commandOutput,
     isAgentWorking,
+    activity,
     promptQueue,
     activeConversationId,
     activeConversationTitle,
